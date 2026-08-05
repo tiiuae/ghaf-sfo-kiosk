@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 TII (SSRC) and the Ghaf contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# The PR gate. Everything is a flake check, so this file stays three nix calls:
+# `nix flake check` builds the package, runs `cargo test` via buildRustPackage's
+# checkPhase, clippy, and treefmt over every language in the tree.
+
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}.${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: build, test and lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2.20.0
+        with:
+          egress-policy: audit
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install nix
+        uses: cachix/install-nix-action@630ae543ea3a38a9a4166f03376c02c50f408342 # v31.11.0
+        with:
+          extra_nix_config: |
+            accept-flake-config = true
+            extra-substituters = https://ghaf-dev.cachix.org https://nix-community.cachix.org
+            extra-trusted-public-keys = ghaf-dev.cachix.org-1:S3M8x3no8LFQPBfHw1jl6nmP8A7cVWKntoMKN3IsEQY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+
+      # Cheapest first: a missing licence header is a ten-second fix.
+      - name: Licence headers
+        run: nix run nixpkgs#reuse -- lint
+
+      - name: Flake outputs are well-formed
+        run: nix flake show --all-systems
+
+      - name: Build, test, clippy and formatting
+        run: nix flake check --all-systems --keep-going -L

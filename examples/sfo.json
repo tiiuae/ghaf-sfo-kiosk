@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "title": "SFO",
+  "status_bar": {
+    "clock_format": "%H:%M",
+    "show_battery": true,
+    "show_network": true
+  },
+  "layout": { "columns": 3 },
+  "buttons": [
+    {
+      "id": "plan",
+      "label": "Plan",
+      "icon": "map-symbolic",
+      "description": "Mission planning",
+      "action": {
+        "kind": "givc-app",
+        "vm": "flatpak-vm",
+        "app": "run-flatpak-app",
+        "args": ["http://org.example.Plan"],
+        "givc_cli": [
+          "/run/current-system/sw/bin/givc-cli",
+          "--name",
+          "admin-vm"
+        ]
+      }
+    },
+    {
+      "id": "launch",
+      "label": "Launch",
+      "icon": "media-playback-start-symbolic",
+      "action": {
+        "kind": "givc-app",
+        "vm": "flatpak-vm",
+        "app": "run-flatpak-app",
+        "args": ["http://org.example.Launch"],
+        "givc_cli": [
+          "/run/current-system/sw/bin/givc-cli",
+          "--name",
+          "admin-vm"
+        ]
+      }
+    },
+    {
+      "id": "clear",
+      "label": "Clear",
+      "icon": "edit-clear-all-symbolic",
+      "description": "Delete working files",
+      "action": {
+        "kind": "givc-app",
+        "vm": "flatpak-vm",
+        "app": "sfo-clear",
+        "givc_cli": [
+          "/run/current-system/sw/bin/givc-cli",
+          "--name",
+          "admin-vm"
+        ]
+      }
+    },
+    {
+      "id": "network",
+      "label": "Network",
+      "icon": "network-wireless-symbolic",
+      "action": { "kind": "exec", "argv": ["cosmic-settings", "network"] }
+    },
+    {
+      "id": "update",
+      "label": "Update Apps",
+      "icon": "software-update-available-symbolic",
+      "description": "Install newer applications from the SSD",
+      "action": {
+        "kind": "givc-app",
+        "vm": "flatpak-vm",
+        "app": "sfo-update-apps",
+        "givc_cli": [
+          "/run/current-system/sw/bin/givc-cli",
+          "--name",
+          "admin-vm"
+        ]
+      }
+    }
+  ],
+  "exit": { "label": "Exit kiosk", "icon": "window-close-symbolic" }
+}

@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 TII (SSRC) and the Ghaf contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Dependabot has no Nix flake ecosystem, so flake inputs are bumped by hand.
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # A compromised release is usually caught within days, and nothing here
+    # needs an action the moment it ships.
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "bump"
+      include: scope
+    labels: ["dependencies"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "bump"
+      include: scope
+    labels: ["dependencies"]
+    open-pull-requests-limit: 5

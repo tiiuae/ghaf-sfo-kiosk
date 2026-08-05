@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 TII (SSRC) and the Ghaf contributors
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "ghaf-sfo-kiosk"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "A config-driven kiosk shell for Ghaf-based SFO laptops"
+publish = false
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+env_logger = "0.11"
+gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
+gtk4-layer-shell = { version = "0.8", features = ["v1_3"] }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[[bin]]
+name = "ghaf-sfo-kiosk"
+path = "src/main.rs"
+
+[profile.release]
+# A kiosk is one small binary on a microVM's read-only store image; trading
+# compile time for size is the right way round here.
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
