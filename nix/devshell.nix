@@ -12,7 +12,12 @@
           name = "ghaf-sfo-kiosk";
           meta.description = "ghaf-sfo-kiosk development environment";
 
-          packagesFrom = [ config.packages.ghaf-sfo-kiosk ];
+          # auditable=false here only. buildRustPackage puts both a cargo-auditable
+          # wrapper and plain cargo in nativeBuildInputs; a real build resolves the
+          # two bin/cargo by PATH order, but devshell merges these inputs into one
+          # buildEnv, where the collision is a hard error. Dropping the wrapper is
+          # also what we want interactively -- cargo below is the plain toolchain.
+          packagesFrom = [ (config.packages.ghaf-sfo-kiosk.override { auditable = false; }) ];
 
           packages = [
             pkgs.cachix
