@@ -12,8 +12,16 @@
 // under the kiosk's own unit.
 
 use gtk::gio;
+use gtk::glib;
 
-use crate::config::Action;
+use crate::config::{Action, AwaitJob};
+
+/// How often to ask whether the job is still registered.
+const POLL_SECONDS: u32 = 2;
+/// Give up watching after this long and say so. The job is not cancelled -- we
+/// simply stop claiming to know, which is better than a banner that never
+/// resolves.
+const POLL_GIVE_UP_SECONDS: u32 = 15 * 60;
 
 /// How the caller is told what happened.
 pub trait Reporter: 'static {
@@ -23,10 +31,16 @@ pub trait Reporter: 'static {
 
 /// Run `action`, reporting progress and outcome through `reporter`.
 pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R) {
+    let mut await_job: Option<AwaitJob> = None;
     let argv: Vec<String> = match action {
         Action::Exec { argv } => argv.clone(),
-        Action::Givc { argv, target } => {
+        Action::Givc {
+            argv,
+            target,
+            await_job: job,
+        } => {
             log::info!("button {label:?} targets {target}");
+            await_job = job.clone();
             argv.clone()
         }
         Action::Unsupported { reason } => {
@@ -64,6 +78,11 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R)
             // window. Both are unremarkable, and a banner here would pop up
             // long after the press that caused it.
             log::info!("button {label:?}: child exited cleanly");
+            // For a GIVC job this only means "queued". The work is still
+            // running in the other VM.
+            if let Some(job) = await_job {
+                watch_job(job, label, reporter);
+            }
         }
         Err(e) => {
             log::error!("button {label:?}: {e}");
@@ -73,4 +92,63 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R)
             reporter.error(&format!("{label} failed: {brief}"));
         }
     });
+}
+
+/// Poll the GIVC registry until `job.app` is no longer listed, then say so.
+///
+/// Completion only, deliberately. givc's JSON reply carries `VMStatus`, whose
+/// entire vocabulary is Running / PoweredOff / Paused -- there is no failure
+/// state, so success cannot be distinguished from failure here. The only thing
+/// that knows is `get-status`, which prints a Rust `Debug` struct with no
+/// `--as-json`; scraping that would give a banner that lies the day upstream
+/// reformats it. Better to report honestly what we can observe and leave the
+/// detail to the journal.
+fn watch_job<R: Reporter + Clone>(job: AwaitJob, label: String, reporter: R) {
+    let mut waited = 0u32;
+    glib::timeout_add_seconds_local(POLL_SECONDS, move || {
+        waited += POLL_SECONDS;
+
+        match still_running(&job) {
+            Some(true) if waited < POLL_GIVE_UP_SECONDS => glib::ControlFlow::Continue,
+            Some(true) => {
+                log::warn!("button {label:?}: still running after {waited}s; no longer watching");
+                reporter.info(&format!("{label} is still running — check the logs"));
+                glib::ControlFlow::Break
+            }
+            Some(false) => {
+                log::info!("button {label:?}: job finished after {waited}s");
+                reporter.info(&format!("{label} finished"));
+                glib::ControlFlow::Break
+            }
+            // Could not ask. Saying nothing is worse than saying we lost track:
+            // the operator is left watching a banner that never resolves.
+            None => {
+                log::error!("button {label:?}: cannot query the GIVC registry; stopped watching");
+                reporter.error(&format!("{label}: lost track of the job — check the logs"));
+                glib::ControlFlow::Break
+            }
+        }
+    });
+}
+
+/// `Some(true)` still registered, `Some(false)` gone, `None` could not tell.
+fn still_running(job: &AwaitJob) -> Option<bool> {
+    let out = std::process::Command::new(job.query_argv.first()?)
+        .args(&job.query_argv[1..])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    // Match on either field: `name` and `description` are documented upstream as
+    // "VM name" and "App name, some details", and which one carries a GIVC
+    // application's unit name is not something to guess at.
+    let listed = parsed.as_array()?.iter().any(|e| {
+        ["name", "description"]
+            .iter()
+            .filter_map(|k| e.get(*k)?.as_str())
+            .any(|v| v.contains(&job.app))
+    });
+    Some(listed)
 }
