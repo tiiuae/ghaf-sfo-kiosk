@@ -137,6 +137,25 @@ pub struct RawAction {
     /// $PATH in gui-vm on debug images.
     #[serde(default)]
     pub givc_cli: Vec<String>,
+    /// This button runs a job that ends, so wait for it rather than reporting
+    /// success the moment givc-cli queues it. Absent in older configs, hence
+    /// the default.
+    #[serde(default)]
+    pub await_completion: bool,
+}
+
+/// How to tell that a GIVC job has finished. Absent for a launcher button.
+#[derive(Debug, Clone)]
+pub struct AwaitJob {
+    /// `<givc_cli…> query --as-json`.
+    ///
+    /// Deliberately without `--by-name`: givc accepts that argument and ignores
+    /// it — `query()` in its client takes `_by_name` and calls `query_list()` —
+    /// so a filtered request quietly returns everything. Passing a filter that
+    /// does nothing would read as working. We match here instead.
+    pub query_argv: Vec<String>,
+    /// Registry entries are matched against this.
+    pub app: String,
 }
 
 #[derive(Debug, Clone)]
@@ -149,7 +168,17 @@ pub enum Action {
     /// the button's own label says what the operator wanted, `target` says
     /// where it actually went, and when a button silently does nothing those
     /// are the two facts you need side by side.
-    Givc { argv: Vec<String>, target: String },
+    ///
+    /// `await_job` is set only for a button that runs a job which ENDS.
+    /// `givc-cli start app` returns 0 as soon as the unit is queued, so without
+    /// it a button reports success before the work begins — and a launcher must
+    /// never be awaited, because its unit stays active for as long as the
+    /// application runs.
+    Givc {
+        argv: Vec<String>,
+        target: String,
+        await_job: Option<AwaitJob>,
+    },
     /// Parsed, but not executable. Still renders; says why when pressed.
     Unsupported { reason: String },
 }
@@ -187,9 +216,18 @@ impl Action {
                     argv.push("--".to_owned());
                     argv.extend(raw.args.iter().cloned());
                 }
+                let await_job = raw.await_completion.then(|| {
+                    let mut query_argv = raw.givc_cli.clone();
+                    query_argv.extend(["query".to_owned(), "--as-json".to_owned()]);
+                    AwaitJob {
+                        query_argv,
+                        app: app.clone(),
+                    }
+                });
                 Self::Givc {
                     argv,
                     target: format!("{app} in {vm}"),
+                    await_job,
                 }
             }
             "" => Self::Unsupported {
@@ -346,6 +384,56 @@ mod tests {
                 "run-flatpak-app",
                 "--",
                 "http://org.example.Plan",
+            ]
+        );
+    }
+
+    /// The default is what stops the kiosk hanging: `run-flatpak-app` stays
+    /// active for as long as the application runs, so a launcher that got
+    /// awaited would spin until the give-up timeout on every press.
+    #[test]
+    fn a_button_is_not_awaited_unless_it_says_so() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"l","label":"L","action":{
+                 "kind":"givc-app","vm":"flatpak-vm","app":"run-flatpak-app",
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
+        )
+        .unwrap();
+        let Action::Givc { await_job, .. } = &k.buttons[0].action else {
+            panic!("expected a givc action");
+        };
+        assert!(
+            await_job.is_none(),
+            "a button with no await_completion must not be waited on"
+        );
+    }
+
+    #[test]
+    fn awaiting_a_job_queries_the_registry_without_a_filter() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"u","label":"U","action":{
+                 "kind":"givc-app","vm":"flatpak-vm","app":"sfo-update-apps",
+                 "await_completion":true,
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli","--name","admin-vm"]}}]}"#,
+        )
+        .unwrap();
+        let Action::Givc { await_job, .. } = &k.buttons[0].action else {
+            panic!("expected a givc action");
+        };
+        let job = await_job
+            .as_ref()
+            .expect("await_completion must be honoured");
+        assert_eq!(job.app, "sfo-update-apps");
+        // No --by-name: givc ignores that argument and returns the whole list,
+        // so asking for a filter would look like it worked and quietly not.
+        assert_eq!(
+            job.query_argv,
+            &[
+                "/nix/store/x-givc-cli/bin/givc-cli",
+                "--name",
+                "admin-vm",
+                "query",
+                "--as-json",
             ]
         );
     }
