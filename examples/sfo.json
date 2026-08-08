@@ -6,12 +6,14 @@
     "show_battery": true,
     "show_network": true
   },
-  "layout": { "columns": 3 },
+  "layout": {
+    "columns": 3
+  },
   "buttons": [
     {
       "id": "plan",
       "label": "Plan",
-      "icon": "map-symbolic",
+      "icon": "mark-location-symbolic",
       "description": "Mission planning",
       "action": {
         "kind": "givc-app",
@@ -23,7 +25,8 @@
           "--name",
           "admin-vm"
         ]
-      }
+      },
+      "icon_size": 58
     },
     {
       "id": "launch",
@@ -39,12 +42,13 @@
           "--name",
           "admin-vm"
         ]
-      }
+      },
+      "icon_size": 50
     },
     {
       "id": "clear",
       "label": "Clear",
-      "icon": "edit-clear-all-symbolic",
+      "icon": "user-trash-symbolic",
       "description": "Delete working files",
       "action": {
         "kind": "givc-service",
@@ -55,19 +59,25 @@
           "--name",
           "admin-vm"
         ]
-      }
-    },
+      },
+      "icon_size": 54
+    }
+  ],
+  "corners": [
     {
-      "id": "network",
+      "position": "bottom-left",
       "label": "Network",
       "icon": "network-wireless-symbolic",
-      "action": { "kind": "exec", "argv": ["cosmic-settings", "network"] }
+      "action": {
+        "kind": "exec",
+        "argv": ["cosmic-settings", "network"]
+      },
+      "icon_size": 50
     },
     {
-      "id": "update",
+      "position": "bottom-center",
       "label": "Update Apps",
       "icon": "software-update-available-symbolic",
-      "description": "Install newer applications from the SSD",
       "action": {
         "kind": "givc-app",
         "vm": "flatpak-vm",
@@ -78,15 +88,22 @@
           "--name",
           "admin-vm"
         ]
-      }
+      },
+      "icon_size": 44
     },
     {
-      "id": "power",
+      "position": "bottom-right",
       "label": "Power",
       "icon": "system-shutdown-symbolic",
-      "description": "Lock, log out, restart or shut down",
-      "action": { "kind": "exec", "argv": ["cosmic-applet-power"] }
+      "action": {
+        "kind": "exec",
+        "argv": ["cosmic-applet-power"]
+      },
+      "icon_size": 46
     }
   ],
-  "exit": { "label": "Exit kiosk", "icon": "window-close-symbolic" }
+  "exit": {
+    "label": "Exit kiosk",
+    "icon": "window-close-symbolic"
+  }
 }

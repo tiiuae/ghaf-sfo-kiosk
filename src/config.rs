@@ -27,7 +27,69 @@ pub struct Config {
     pub layout: Layout,
     #[serde(default)]
     pub exit: ExitButton,
+    /// Utility controls anchored to the edges of the surface rather than placed
+    /// in the grid. Several may share a position; they become a row, in this
+    /// order. Empty is allowed, and is what every config produced before this
+    /// key existed contains.
+    #[serde(default)]
+    pub corners: Vec<Corner>,
     pub buttons: Vec<Button>,
+}
+
+/// A control anchored to an edge of the surface rather than placed in the grid.
+///
+/// Edge controls are for utilities; the grid is for applications. They are drawn
+/// as dashed circles for exactly that reason -- the difference has to be legible
+/// before the label is read.
+#[derive(Debug, Deserialize)]
+pub struct Corner {
+    /// Where it sits: see `Position`. A string rather than a serde enum so that
+    /// an unrecognised value can be reported and skipped instead of making the
+    /// whole file unparseable.
+    pub position: String,
+    pub label: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    /// Rendered size in pixels, overriding the default.
+    ///
+    /// Optical, not geometric: a solid glyph fills its box and a few thin
+    /// strokes do not, so two icons at the same pixel size look like different
+    /// sizes. Which icons need the adjustment is a property of the icon set the
+    /// product chose, so it is set here rather than guessed at in the binary.
+    #[serde(default)]
+    pub icon_size: Option<u32>,
+    #[serde(default)]
+    pub action: RawAction,
+}
+
+/// Where along the bottom edge a control sits. More than one control may share a
+/// position; they are laid out as a row, in config order.
+///
+/// Position is policy, not decoration. The two CORNERS are the hardest places on
+/// a touchscreen to hit by accident and still easy to reach with a thumb, so they
+/// suit things you need but rarely want. `Center` is the opposite: the
+/// easiest place on the screen to hit, which is right for something used
+/// constantly and wrong for anything you would regret.
+///
+/// The top edge is deliberately absent. Nothing has needed it, and it is one
+/// line to add when something does -- at which point these variants grow an
+/// edge in their names, which is why they do not carry one now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+    Left,
+    Center,
+    Right,
+}
+
+impl Position {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "bottom-left" => Some(Self::Left),
+            "bottom-center" => Some(Self::Center),
+            "bottom-right" => Some(Self::Right),
+            _ => None,
+        }
+    }
 }
 
 fn default_title() -> String {
@@ -113,6 +175,14 @@ pub struct Button {
     pub description: Option<String>,
     #[serde(default)]
     pub icon: Option<String>,
+    /// Rendered size in pixels, overriding the default.
+    ///
+    /// Optical, not geometric: a solid glyph fills its box and a few thin
+    /// strokes do not, so two icons at the same pixel size look like different
+    /// sizes. Which icons need the adjustment is a property of the icon set the
+    /// product chose, so it is set here rather than guessed at in the binary.
+    #[serde(default)]
+    pub icon_size: Option<u32>,
     #[serde(default)]
     pub action: RawAction,
 }
@@ -284,6 +354,16 @@ pub struct ResolvedButton {
     pub label: String,
     pub description: Option<String>,
     pub icon: Option<String>,
+    pub icon_size: Option<u32>,
+    pub action: Action,
+}
+
+/// An edge control with its position and action already resolved.
+pub struct ResolvedCorner {
+    pub position: Position,
+    pub label: String,
+    pub icon: Option<String>,
+    pub icon_size: Option<u32>,
     pub action: Action,
 }
 
@@ -292,6 +372,7 @@ pub struct Kiosk {
     pub status_bar: StatusBar,
     pub layout: Layout,
     pub exit: ExitButton,
+    pub corners: Vec<ResolvedCorner>,
     pub buttons: Vec<ResolvedButton>,
 }
 
@@ -331,8 +412,39 @@ pub fn load(path: &Path) -> Result<Kiosk> {
                 label: b.label.clone(),
                 description: b.description.clone(),
                 icon: b.icon.clone(),
+                icon_size: b.icon_size,
                 action,
             }
+        })
+        .collect();
+
+    // An unplaceable control is the one problem that has to remove it: there is
+    // nowhere to draw it. Every other problem keeps the control and reports
+    // itself when pressed, so the operator sees something that explains itself
+    // rather than an edge that is mysteriously empty.
+    let corners = cfg
+        .corners
+        .iter()
+        .filter_map(|c| {
+            let Some(position) = Position::parse(&c.position) else {
+                log::warn!(
+                    "edge control {:?}: unknown position {:?}; skipping it",
+                    c.label,
+                    c.position
+                );
+                return None;
+            };
+            let action = Action::from_raw(&c.action);
+            if let Action::Unsupported { reason } = &action {
+                log::warn!("edge control {:?}: {}", c.label, reason);
+            }
+            Some(ResolvedCorner {
+                position,
+                label: c.label.clone(),
+                icon: c.icon.clone(),
+                icon_size: c.icon_size,
+                action,
+            })
         })
         .collect();
 
@@ -341,6 +453,7 @@ pub fn load(path: &Path) -> Result<Kiosk> {
         status_bar: cfg.status_bar,
         layout: cfg.layout,
         exit: cfg.exit,
+        corners,
         buttons,
     })
 }
@@ -375,7 +488,23 @@ mod tests {
         let p = dir.join("sfo.json");
         std::fs::write(&p, example).unwrap();
         let k = load(&p).expect("examples/sfo.json must parse");
-        assert_eq!(k.buttons.len(), 6, "the SFO product has six buttons");
+
+        // Three in the grid and three on the edge, and the split is the design:
+        // the grid is what an operator works in, the edge is the machine. A
+        // button reappearing in the grid means that line has moved.
+        assert_eq!(k.buttons.len(), 3, "three applications in the grid");
+        assert_eq!(
+            k.corners.iter().map(|c| c.position).collect::<Vec<_>>(),
+            vec![Position::Left, Position::Center, Position::Right],
+            "the edge controls run left, centre, right along the bottom"
+        );
+        for c in &k.corners {
+            assert!(
+                !matches!(c.action, Action::Unsupported { .. }),
+                "edge control {:?} did not resolve",
+                c.label
+            );
+        }
         for b in &k.buttons {
             assert!(
                 !matches!(b.action, Action::Unsupported { .. }),
@@ -556,6 +685,18 @@ mod tests {
     #[test]
     fn a_future_version_is_refused_rather_than_half_understood() {
         assert!(parse(r#"{"version":2,"buttons":[{"id":"a","label":"A"}]}"#).is_err());
+    }
+
+    #[test]
+    fn an_edge_control_with_an_unknown_position_is_dropped_not_fatal() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}],
+                "corners":[{"position":"middle","label":"Nowhere"},
+                           {"position":"bottom-left","label":"Here","action":{"kind":"exec","argv":["true"]}}]}"#,
+        )
+        .expect("an unplaceable control must not fail the whole file");
+        assert_eq!(k.corners.len(), 1);
+        assert_eq!(k.corners[0].position, Position::Left);
     }
 
     #[test]

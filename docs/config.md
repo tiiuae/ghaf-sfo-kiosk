@@ -21,6 +21,7 @@ what the kiosk is actually running.
 | `status_bar` | object | —       | Clock, battery, network.                      |
 | `layout`     | object | —       | `columns` (int, default 3).                   |
 | `exit`       | object | —       | `label` and `icon` for the small exit button. |
+| `corners`    | array  | `[]`    | Utility controls on the edges. See below.     |
 
 ### `version` is not ceremony
 
@@ -32,20 +33,75 @@ diagnosable failure the system can produce.
 Within a version, **unknown fields are ignored rather than rejected**, so a newer nix module adding a
 field to an existing action kind does not brick an older binary.
 
+## Corners — controls on the edges
+
+Utility controls anchored to the bottom edge of the surface instead of placed in the grid, drawn as
+circles where an application is a rounded square. The shape is the message: squares are the
+operator's work, circles are the machine, and that reads before any label does. `corners` is optional and defaults to
+empty, so a config that predates it behaves exactly as before.
+
+**On the name:** the key is `corners`, but a control can sit at `bottom-center`, which is not a
+corner. Read "corner" as "edge control".
+
+Where a control sits is policy, not decoration:
+
+| `position`                    | What it is good for                                                                                              |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `bottom-left`, `bottom-right` | Hardest places to hit by accident, easy to reach with a thumb. For things you need but rarely want.              |
+| `bottom-center`               | The easiest place on the screen to hit. For something used constantly — and wrong for anything you would regret. |
+
+The top edge is deliberately not offered: nothing has needed it.
+
+**Several controls may share a position.** They are laid out as a row, in the order they appear in
+`corners`. This is why placement belongs to the row and not to the control.
+
+```jsonc
+{
+  "position": "bottom-center", // see the table above
+  "label": "Update Apps",
+  "icon": "software-update-available-symbolic",
+  "icon_size": 44, // optional; see "Buttons" below
+  "action": { "kind": "givc-app" /* … */ },
+}
+```
+
+An edge control takes any action a button takes, and is activated by a plain tap. An unrecognised
+`position` is the one problem that removes a control — there is nowhere to draw it — and it is
+logged. Everything else keeps the control and reports itself when pressed.
+
+In `examples/sfo.json` the edge carries Network, Update Apps and Power — the three an operator
+touches occasionally — while Plan, Launch and Clear stay in the grid. That example is a unit-test
+fixture too, so it cannot rot.
+
 ## Buttons
 
 ```jsonc
 {
-  "id": "plan",                       // [a-z0-9-]+, stable, appears in the journal
-  "label": "Plan",                    // what the operator reads
-  "description": "Mission planning",  // tooltip, optional
-  "icon": "map-symbolic",             // theme name, or an absolute path
+  "id": "plan",                        // [a-z0-9-]+, stable, appears in the journal
+  "label": "Plan",                     // what the operator reads
+  "description": "Mission planning",   // tooltip, optional
+  "icon": "mark-location-symbolic",    // theme name, or an absolute path
+  "icon_size": 58,                     // optional; see below
   "action": { ... }
 }
 ```
 
 Order comes from the nix module, which sorts before writing; the array order here is the display
 order.
+
+### `icon_size` is optical, not geometric
+
+A solid glyph fills its box and a few thin strokes do not, so two icons rendered at the same pixel
+size look like different sizes — a filled triangle next to a Wi-Fi arc is the usual example. The
+default suits a glyph of average density; a heavy one wants less and a sparse one more.
+
+Which icons need the adjustment is a property of the icon set a product chose, not something the
+kiosk can work out, so it is set per control here rather than guessed at in the binary. Omit it
+unless an icon actually looks wrong beside its neighbours.
+
+Icons take their colour from the stylesheet, and the accent is reserved rather than decorative:
+every icon is the same near-white as the labels except the one the operator is there to use, picked
+out by the per-button class `.kiosk-button-<id>`. Colour on everything signals nothing.
 
 ## Actions
 
