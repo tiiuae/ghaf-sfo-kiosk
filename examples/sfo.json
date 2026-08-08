@@ -47,9 +47,9 @@
       "icon": "edit-clear-all-symbolic",
       "description": "Delete working files",
       "action": {
-        "kind": "givc-app",
+        "kind": "givc-service",
         "vm": "flatpak-vm",
-        "app": "sfo-clear",
+        "app": "sfo-clear.service",
         "givc_cli": [
           "/run/current-system/sw/bin/givc-cli",
           "--name",
@@ -72,6 +72,7 @@
         "kind": "givc-app",
         "vm": "flatpak-vm",
         "app": "sfo-update-apps",
+        "await_completion": true,
         "givc_cli": [
           "/run/current-system/sw/bin/givc-cli",
           "--name",

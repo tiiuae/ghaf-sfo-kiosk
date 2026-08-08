@@ -183,6 +183,21 @@ pub enum Action {
     Unsupported { reason: String },
 }
 
+/// `givc-cli start …` returns as soon as the unit is queued, so a button that runs
+/// a job which ENDS needs something to poll. Shared by both GIVC kinds; the string
+/// matched against the registry is the application id for `app`, the unit name for
+/// `service`.
+fn await_job_for(raw: &RawAction, name: &str) -> Option<AwaitJob> {
+    raw.await_completion.then(|| {
+        let mut query_argv = raw.givc_cli.clone();
+        query_argv.extend(["query".to_owned(), "--as-json".to_owned()]);
+        AwaitJob {
+            query_argv,
+            app: name.to_owned(),
+        }
+    })
+}
+
 impl Action {
     fn from_raw(raw: &RawAction) -> Self {
         match raw.kind.as_str() {
@@ -216,18 +231,43 @@ impl Action {
                     argv.push("--".to_owned());
                     argv.extend(raw.args.iter().cloned());
                 }
-                let await_job = raw.await_completion.then(|| {
-                    let mut query_argv = raw.givc_cli.clone();
-                    query_argv.extend(["query".to_owned(), "--as-json".to_owned()]);
-                    AwaitJob {
-                        query_argv,
-                        app: app.clone(),
-                    }
-                });
                 Self::Givc {
                     argv,
                     target: format!("{app} in {vm}"),
-                    await_job,
+                    await_job: await_job_for(raw, app),
+                }
+            }
+            // A systemd USER unit the target VM exposes through
+            // givc.appvm.capabilities.services. A different subcommand from
+            // `start app`, not a variant of it.
+            "givc-service" => {
+                let (Some(vm), Some(unit)) = (raw.vm.as_ref(), raw.app.as_ref()) else {
+                    return Self::Unsupported {
+                        reason: "action kind \"givc-service\" needs both \"vm\" and \"app\""
+                            .to_owned(),
+                    };
+                };
+                if raw.givc_cli.is_empty() {
+                    return Self::Unsupported {
+                        reason: "action kind \"givc-service\" has an empty \"givc_cli\"".to_owned(),
+                    };
+                }
+                // `givc-cli start service --vm <VM> <SERVICENAME>` has no `--` form.
+                // Args would be dropped by the CLI, so the button would look like it
+                // worked while doing something else.
+                if !raw.args.is_empty() {
+                    return Self::Unsupported {
+                        reason: "action kind \"givc-service\" takes no args".to_owned(),
+                    };
+                }
+                let mut argv = raw.givc_cli.clone();
+                argv.extend(["start".to_owned(), "service".to_owned()]);
+                argv.extend(["--vm".to_owned(), vm.clone()]);
+                argv.push(unit.clone());
+                Self::Givc {
+                    argv,
+                    target: format!("{unit} in {vm}"),
+                    await_job: await_job_for(raw, unit),
                 }
             }
             "" => Self::Unsupported {
@@ -426,6 +466,85 @@ mod tests {
         assert_eq!(job.app, "sfo-update-apps");
         // No --by-name: givc ignores that argument and returns the whole list,
         // so asking for a filter would look like it worked and quietly not.
+        assert_eq!(
+            job.query_argv,
+            &[
+                "/nix/store/x-givc-cli/bin/givc-cli",
+                "--name",
+                "admin-vm",
+                "query",
+                "--as-json",
+            ]
+        );
+    }
+
+    /// `givc-cli start service --vm <VM> <SERVICENAME>` -- a different subcommand
+    /// with a different argument shape from `start app`, not a variant of it.
+    #[test]
+    fn a_service_argv_uses_the_service_subcommand() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"c","label":"C","action":{
+                 "kind":"givc-service","vm":"flatpak-vm","app":"sfo-clear.service",
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli","--name","admin-vm"]}}]}"#,
+        )
+        .unwrap();
+        let Action::Givc { argv, target, .. } = &k.buttons[0].action else {
+            panic!("expected a givc action");
+        };
+        assert_eq!(
+            argv,
+            &[
+                "/nix/store/x-givc-cli/bin/givc-cli",
+                "--name",
+                "admin-vm",
+                "start",
+                "service",
+                "--vm",
+                "flatpak-vm",
+                "sfo-clear.service",
+            ]
+        );
+        assert_eq!(target, "sfo-clear.service in flatpak-vm");
+    }
+
+    /// `start service` has no `--` form, so args would be dropped by the CLI and
+    /// the button would appear to work while doing something else.
+    #[test]
+    fn a_service_refuses_args_instead_of_dropping_them() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"c","label":"C","action":{
+                 "kind":"givc-service","vm":"flatpak-vm","app":"sfo-clear.service",
+                 "args":["--anything"],
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+    }
+
+    /// Awaiting matches registry entries by name, so for a service that is the
+    /// unit name rather than an application id.
+    ///
+    /// Structurally supported, but NOT usable against givc as it stands: a
+    /// service is registered as a capability when the agent starts and stays
+    /// listed whether or not it is running, so `still_running` never goes false.
+    /// Only an application is deregistered when it exits. The nix module refuses
+    /// the combination; this covers the code path for when givc can express it.
+    #[test]
+    fn a_service_can_be_awaited_by_its_unit_name() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"u","label":"U","action":{
+                 "kind":"givc-service","vm":"flatpak-vm","app":"sfo-update-apps.service",
+                 "await_completion":true,
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli","--name","admin-vm"]}}]}"#,
+        )
+        .unwrap();
+        let Action::Givc { await_job, .. } = &k.buttons[0].action else {
+            panic!("expected a givc action");
+        };
+        let job = await_job
+            .as_ref()
+            .expect("await_completion must be honoured");
+        assert_eq!(job.app, "sfo-update-apps.service");
         assert_eq!(
             job.query_argv,
             &[
