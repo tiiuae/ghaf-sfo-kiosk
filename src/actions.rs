@@ -43,6 +43,13 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R)
             await_job = job.clone();
             argv.clone()
         }
+        Action::Inert => {
+            // Deliberately silent on screen: a placeholder that announced itself
+            // every time it was touched would be read as a fault. The journal
+            // line is enough to answer "did the press register at all?".
+            log::info!("button {label:?} pressed; it has no action by configuration");
+            return;
+        }
         Action::Unsupported { reason } => {
             // Not an error to shout about — it is a configuration problem the
             // operator can do nothing about. Say precisely what is wrong so

@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "title": "SFO",
+  "status_bar": {
+    "clock_format": "%H:%M",
+    "show_battery": true,
+    "show_network": true
+  },
+  "layout": { "columns": 3 },
+  "buttons": [
+    {
+      "id": "plan",
+      "label": "Plan",
+      "icon": "mark-location-symbolic",
+      "description": "Mission planning",
+      "action": {
+        "kind": "givc-app",
+        "vm": "flatpak-vm",
+        "app": "run-flatpak-app",
+        "args": ["http://org.example.Plan"],
+        "givc_cli": [
+          "/run/current-system/sw/bin/givc-cli",
+          "--name",
+          "admin-vm"
+        ]
+      }
+    },
+    {
+      "id": "launch",
+      "label": "Launch",
+      "icon": "media-playback-start-symbolic",
+      "action": {
+        "kind": "givc-app",
+        "vm": "flatpak-vm",
+        "app": "run-flatpak-app",
+        "args": ["http://org.example.Launch"],
+        "givc_cli": [
+          "/run/current-system/sw/bin/givc-cli",
+          "--name",
+          "admin-vm"
+        ]
+      }
+    },
+    {
+      "id": "clear",
+      "label": "Clear",
+      "icon": "edit-clear-all-symbolic",
+      "description": "Delete working files",
+      "action": {
+        "kind": "givc-service",
+        "vm": "flatpak-vm",
+        "app": "sfo-clear.service",
+        "givc_cli": [
+          "/run/current-system/sw/bin/givc-cli",
+          "--name",
+          "admin-vm"
+        ]
+      }
+    }
+  ],
+  "corners": [
+    {
+      "position": "bottom-left",
+      "label": "System 1",
+      "icon": "preferences-other-symbolic",
+      "action": { "kind": "none" }
+    },
+    {
+      "position": "bottom-center",
+      "label": "System 2",
+      "icon": "preferences-other-symbolic",
+      "action": { "kind": "none" }
+    },
+    {
+      "position": "bottom-right",
+      "label": "System 3",
+      "icon": "preferences-other-symbolic",
+      "action": { "kind": "none" }
+    }
+  ]
+}

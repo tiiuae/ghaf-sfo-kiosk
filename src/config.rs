@@ -27,7 +27,61 @@ pub struct Config {
     pub layout: Layout,
     #[serde(default)]
     pub exit: ExitButton,
+    /// Utility controls anchored to the edges of the surface rather than placed
+    /// in the grid. Several may share a position; they become a row, in this
+    /// order. Empty is allowed, and is what every config produced before this
+    /// key existed contains.
+    #[serde(default)]
+    pub corners: Vec<Corner>,
     pub buttons: Vec<Button>,
+}
+
+/// A control anchored to an edge of the surface rather than placed in the grid.
+///
+/// Edge controls are for utilities; the grid is for applications. They are drawn
+/// as dashed circles for exactly that reason -- the difference has to be legible
+/// before the label is read.
+#[derive(Debug, Deserialize)]
+pub struct Corner {
+    /// Where it sits: see `Position`. A string rather than a serde enum so that
+    /// an unrecognised value can be reported and skipped instead of making the
+    /// whole file unparseable.
+    pub position: String,
+    pub label: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub action: RawAction,
+}
+
+/// Where along the bottom edge a control sits. More than one control may share a
+/// position; they are laid out as a row, in config order.
+///
+/// Position is policy, not decoration. The two CORNERS are the hardest places on
+/// a touchscreen to hit by accident and still easy to reach with a thumb, so they
+/// suit things you need but rarely want. `Center` is the opposite: the
+/// easiest place on the screen to hit, which is right for something used
+/// constantly and wrong for anything you would regret.
+///
+/// The top edge is deliberately absent. Nothing has needed it, and it is one
+/// line to add when something does -- at which point these variants grow an
+/// edge in their names, which is why they do not carry one now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Position {
+    Left,
+    Center,
+    Right,
+}
+
+impl Position {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "bottom-left" => Some(Self::Left),
+            "bottom-center" => Some(Self::Center),
+            "bottom-right" => Some(Self::Right),
+            _ => None,
+        }
+    }
 }
 
 fn default_title() -> String {
@@ -181,6 +235,14 @@ pub enum Action {
     },
     /// Parsed, but not executable. Still renders; says why when pressed.
     Unsupported { reason: String },
+    /// Renders as an ordinary control and deliberately does nothing.
+    ///
+    /// A placeholder for something whose real action has not been decided yet.
+    /// It is not the same as leaving the action out: an unconfigured control
+    /// renders DIMMED and reports "not configured" when pressed, which is right
+    /// for a mistake and wrong for a deliberate placeholder that someone is
+    /// being asked to look at and judge.
+    Inert,
 }
 
 /// `givc-cli start …` returns as soon as the unit is queued, so a button that runs
@@ -268,6 +330,7 @@ impl Action {
                     await_job: await_job_for(raw, unit),
                 }
             }
+            "none" => Self::Inert,
             "" => Self::Unsupported {
                 reason: "no action configured".to_owned(),
             },
@@ -287,11 +350,20 @@ pub struct ResolvedButton {
     pub action: Action,
 }
 
+/// An edge control with its position and action already resolved.
+pub struct ResolvedCorner {
+    pub position: Position,
+    pub label: String,
+    pub icon: Option<String>,
+    pub action: Action,
+}
+
 pub struct Kiosk {
     pub title: String,
     pub status_bar: StatusBar,
     pub layout: Layout,
     pub exit: ExitButton,
+    pub corners: Vec<ResolvedCorner>,
     pub buttons: Vec<ResolvedButton>,
 }
 
@@ -336,11 +408,41 @@ pub fn load(path: &Path) -> Result<Kiosk> {
         })
         .collect();
 
+    // An unplaceable control is the one problem that has to remove it: there is
+    // nowhere to draw it. Every other problem keeps the control and reports
+    // itself when pressed, so the operator sees something that explains itself
+    // rather than an edge that is mysteriously empty.
+    let corners = cfg
+        .corners
+        .iter()
+        .filter_map(|c| {
+            let Some(position) = Position::parse(&c.position) else {
+                log::warn!(
+                    "edge control {:?}: unknown position {:?}; skipping it",
+                    c.label,
+                    c.position
+                );
+                return None;
+            };
+            let action = Action::from_raw(&c.action);
+            if let Action::Unsupported { reason } = &action {
+                log::warn!("edge control {:?}: {}", c.label, reason);
+            }
+            Some(ResolvedCorner {
+                position,
+                label: c.label.clone(),
+                icon: c.icon.clone(),
+                action,
+            })
+        })
+        .collect();
+
     Ok(Kiosk {
         title: cfg.title,
         status_bar: cfg.status_bar,
         layout: cfg.layout,
         exit: cfg.exit,
+        corners,
         buttons,
     })
 }
@@ -556,6 +658,58 @@ mod tests {
     #[test]
     fn a_future_version_is_refused_rather_than_half_understood() {
         assert!(parse(r#"{"version":2,"buttons":[{"id":"a","label":"A"}]}"#).is_err());
+    }
+
+    /// The layout mock-up is shipped as a config, so it cannot rot either.
+    #[test]
+    fn the_system_row_example_places_every_control() {
+        let example = include_str!("../examples/system-row.json");
+        let dir = std::env::temp_dir().join("kiosk-test-system-row");
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("system-row.json");
+        std::fs::write(&p, example).unwrap();
+        let k = load(&p).expect("examples/system-row.json must parse");
+
+        assert_eq!(
+            k.corners.iter().map(|c| c.position).collect::<Vec<_>>(),
+            vec![Position::Left, Position::Center, Position::Right],
+            "the placeholders run left, centre, right along the bottom"
+        );
+        assert!(
+            k.corners.iter().all(|c| matches!(c.action, Action::Inert)),
+            "the placeholders are inert, not unconfigured"
+        );
+    }
+
+    /// A placeholder must not be mistaken for a mistake. `Unsupported` renders
+    /// dimmed and reports itself when pressed; `Inert` renders like any other
+    /// control and stays quiet, which is the whole reason the kind exists.
+    #[test]
+    fn a_none_action_is_inert_rather_than_unsupported() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}],
+                "corners":[{"position":"bottom-center","label":"System 1",
+                            "action":{"kind":"none"}},
+                           {"position":"bottom-center","label":"System 2"}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(k.corners[0].action, Action::Inert));
+        // Omitting the action entirely does not make a control inert, it makes
+        // it unconfigured -- which renders dimmed and says so when pressed.
+        assert_eq!(k.corners[1].position, Position::Center);
+        assert!(matches!(k.corners[1].action, Action::Unsupported { .. }));
+    }
+
+    #[test]
+    fn an_edge_control_with_an_unknown_position_is_dropped_not_fatal() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}],
+                "corners":[{"position":"middle","label":"Nowhere"},
+                           {"position":"bottom-left","label":"Here","action":{"kind":"none"}}]}"#,
+        )
+        .expect("an unplaceable control must not fail the whole file");
+        assert_eq!(k.corners.len(), 1);
+        assert_eq!(k.corners[0].position, Position::Left);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use gtk::prelude::*;
 
 use crate::actions::{self, Reporter};
 use crate::config::Kiosk;
-use crate::status;
+use crate::{corner, status};
 
 #[derive(Clone)]
 pub struct Banner {
@@ -172,6 +172,32 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application) -> gtk::Widget {
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&column));
     overlay.add_overlay(&exit);
+
+    // Edge controls: one row per occupied position, over the grid rather than
+    // inside it. They are anchored to the surface, not to the end of a list of
+    // things, and must stay put however many buttons the grid has. Controls
+    // sharing a position would otherwise be drawn on top of each other.
+    for position in corner::POSITIONS {
+        let specs: Vec<_> = kiosk
+            .corners
+            .iter()
+            .filter(|c| c.position == position)
+            .collect();
+        if specs.is_empty() {
+            continue;
+        }
+        let row = corner::row(position);
+        for spec in specs {
+            row.append(&corner::build(spec, {
+                let action = spec.action.clone();
+                let label = spec.label.clone();
+                let reporter = banner.clone();
+                move || actions::dispatch(&action, &label, &reporter)
+            }));
+        }
+        overlay.add_overlay(&row);
+    }
+
     overlay.upcast()
 }
 
@@ -203,6 +229,13 @@ window.kiosk-root {
 .kiosk-button:active { background-color: #303d4d; }
 .kiosk-button-label { font-size: 19px; font-weight: bold; }
 .kiosk-button-unconfigured { opacity: 0.45; }
+
+/* Edge controls: quieter than an application, and no fill -- the dashed ring is
+   drawn, so the button itself must not paint a box behind it. */
+.kiosk-corner { background: transparent; padding: 0; }
+.kiosk-corner-label { color: #8b979e; font-size: 15px; }
+.kiosk-corner-icon { color: #b7c1c6; }
+.kiosk-corner:hover .kiosk-corner-icon { color: #e9edef; }
 .kiosk-exit {
     margin: 14px;
     min-width: 34px;
