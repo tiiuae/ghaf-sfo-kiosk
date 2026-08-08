@@ -9,6 +9,7 @@
 
 mod actions;
 mod config;
+mod corner;
 mod outputs;
 mod status;
 mod surface;

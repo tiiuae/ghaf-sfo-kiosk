@@ -21,6 +21,7 @@ what the kiosk is actually running.
 | `status_bar` | object | —       | Clock, battery, network.                      |
 | `layout`     | object | —       | `columns` (int, default 3).                   |
 | `exit`       | object | —       | `label` and `icon` for the small exit button. |
+| `corners`    | array  | `[]`    | Utility controls on the edges. See below.     |
 
 ### `version` is not ceremony
 
@@ -31,6 +32,43 @@ diagnosable failure the system can produce.
 
 Within a version, **unknown fields are ignored rather than rejected**, so a newer nix module adding a
 field to an existing action kind does not brick an older binary.
+
+## Corners — controls on the edges
+
+Utility controls anchored to an edge of the surface instead of placed in the grid, drawn as dashed
+circles so that a utility never reads as an application. `corners` is optional and defaults to
+empty, so a config that predates it behaves exactly as before.
+
+**On the name:** the key is `corners`, but a control can sit at `bottom-center`, which is not a
+corner. Read "corner" as "edge control".
+
+Where a control sits is policy, not decoration:
+
+| `position`                    | What it is good for                                                                                              |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `bottom-left`, `bottom-right` | Hardest places to hit by accident, easy to reach with a thumb. For things you need but rarely want.              |
+| `bottom-center`               | The easiest place on the screen to hit. For something used constantly — and wrong for anything you would regret. |
+
+The top edge is deliberately not offered: nothing has needed it.
+
+**Several controls may share a position.** They are laid out as a row, in the order they appear in
+`corners`. This is why placement belongs to the row and not to the control.
+
+```jsonc
+{
+  "position": "bottom-center", // see the table above
+  "label": "System 2",
+  "icon": "preferences-other-symbolic",
+  "action": { "kind": "none" },
+}
+```
+
+An edge control takes any action a button takes, and is activated by a plain tap. An unrecognised
+`position` is the one problem that removes a control — there is nowhere to draw it — and it is
+logged. Everything else keeps the control and reports itself when pressed.
+
+`examples/system-row.json` is a layout under evaluation: three applications and three inert
+placeholders along the bottom edge. It is a unit-test fixture too, so it cannot rot.
 
 ## Buttons
 
@@ -57,6 +95,19 @@ order.
 
 `argv` is an array, never a shell string. The kiosk executes it directly, so there is no shell, no
 quoting rules to get wrong, and nothing to inject into.
+
+### `none` — a placeholder that deliberately does nothing
+
+```json
+{ "kind": "none" }
+```
+
+Renders as an ordinary control and does nothing when pressed, logging one line to the journal.
+
+This is **not** the same as leaving `action` out. An unconfigured control renders **dimmed** and
+reports "not configured" when pressed — right for a mistake, wrong for a placeholder somebody is
+being asked to look at and judge. Use `none` while a control's real job is still being decided, and
+delete it or give it an action before shipping.
 
 ### `givc-app` — start an application in another VM
 
