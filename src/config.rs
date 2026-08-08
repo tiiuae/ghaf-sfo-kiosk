@@ -237,9 +237,8 @@ impl Action {
                     await_job: await_job_for(raw, app),
                 }
             }
-            // A systemd USER unit the target VM exposes through
-            // givc.appvm.capabilities.services. A different subcommand from
-            // `start app`, not a variant of it.
+            // A systemd user unit exposed through givc.appvm.capabilities.services.
+            // A separate givc-cli subcommand, not a variant of `start app`.
             "givc-service" => {
                 let (Some(vm), Some(unit)) = (raw.vm.as_ref(), raw.app.as_ref()) else {
                     return Self::Unsupported {
@@ -252,9 +251,8 @@ impl Action {
                         reason: "action kind \"givc-service\" has an empty \"givc_cli\"".to_owned(),
                     };
                 }
-                // `givc-cli start service --vm <VM> <SERVICENAME>` has no `--` form.
-                // Args would be dropped by the CLI, so the button would look like it
-                // worked while doing something else.
+                // `start service --vm <VM> <SERVICENAME>` has no `--` form, so args
+                // would be dropped by the CLI rather than rejected.
                 if !raw.args.is_empty() {
                     return Self::Unsupported {
                         reason: "action kind \"givc-service\" takes no args".to_owned(),
@@ -521,14 +519,12 @@ mod tests {
         assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
     }
 
-    /// Awaiting matches registry entries by name, so for a service that is the
-    /// unit name rather than an application id.
+    /// The awaited name is the unit, not an application id.
     ///
-    /// Structurally supported, but NOT usable against givc as it stands: a
-    /// service is registered as a capability when the agent starts and stays
-    /// listed whether or not it is running, so `still_running` never goes false.
-    /// Only an application is deregistered when it exits. The nix module refuses
-    /// the combination; this covers the code path for when givc can express it.
+    /// Unusable against givc as it stands: a service stays in the registry
+    /// whether running or not, so `still_running` never goes false. The nix
+    /// module refuses the combination; this covers the code path for when givc
+    /// can express it.
     #[test]
     fn a_service_can_be_awaited_by_its_unit_name() {
         let k = parse(
