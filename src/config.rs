@@ -375,7 +375,7 @@ mod tests {
         let p = dir.join("sfo.json");
         std::fs::write(&p, example).unwrap();
         let k = load(&p).expect("examples/sfo.json must parse");
-        assert_eq!(k.buttons.len(), 5, "the SFO product has five buttons");
+        assert_eq!(k.buttons.len(), 6, "the SFO product has six buttons");
         for b in &k.buttons {
             assert!(
                 !matches!(b.action, Action::Unsupported { .. }),
