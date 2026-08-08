@@ -79,6 +79,13 @@
           "admin-vm"
         ]
       }
+    },
+    {
+      "id": "power",
+      "label": "Power",
+      "icon": "system-shutdown-symbolic",
+      "description": "Lock, log out, restart or shut down",
+      "action": { "kind": "exec", "argv": ["cosmic-applet-power"] }
     }
   ],
   "exit": { "label": "Exit kiosk", "icon": "window-close-symbolic" }
