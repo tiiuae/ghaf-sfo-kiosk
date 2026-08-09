@@ -77,7 +77,7 @@
     {
       "position": "bottom-center",
       "label": "Update Apps",
-      "icon": "software-update-available-symbolic",
+      "icon": "folder-download-symbolic",
       "action": {
         "kind": "givc-app",
         "vm": "flatpak-vm",
@@ -89,7 +89,7 @@
           "admin-vm"
         ]
       },
-      "icon_size": 44
+      "icon_size": 48
     },
     {
       "position": "bottom-right",

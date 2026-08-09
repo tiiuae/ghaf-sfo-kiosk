@@ -59,8 +59,8 @@ The top edge is deliberately not offered: nothing has needed it.
 {
   "position": "bottom-center", // see the table above
   "label": "Update Apps",
-  "icon": "software-update-available-symbolic",
-  "icon_size": 44, // optional; see "Buttons" below
+  "icon": "folder-download-symbolic",
+  "icon_size": 48, // optional; see "Buttons" below
   "action": { "kind": "givc-app" /* … */ },
 }
 ```
@@ -98,6 +98,11 @@ default suits a glyph of average density; a heavy one wants less and a sparse on
 Which icons need the adjustment is a property of the icon set a product chose, not something the
 kiosk can work out, so it is set per control here rather than guessed at in the binary. Omit it
 unless an icon actually looks wrong beside its neighbours.
+
+The example above is a measured instance rather than a guess. `Update Apps` sat at **44** while its
+icon was a gear — a solid mass — and moved to **48** when the gear was replaced by a download arrow,
+which is three thin strokes and read noticeably smaller beside the Wi-Fi arc next to it. Same
+position, same neighbours, same screen; only the glyph's density changed.
 
 Icons take their colour from the stylesheet, and the accent is reserved rather than decorative:
 every icon is the same near-white as the labels except the one the operator is there to use, picked
