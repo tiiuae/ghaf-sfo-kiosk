@@ -5,7 +5,7 @@
 // along a quarter arc bounded by the left and bottom edges.
 //
 // `Geometry` is GTK-free f64 arithmetic, so "every box on screen" and "no two
-// circles touching" are unit tests rather than an impression of one laptop.
+// boxes overlapping" are unit tests rather than an impression of one laptop.
 //
 // Animated by moving gtk::Fixed children from a tick callback. Not GSK
 // transforms or a custom LayoutManager: both need glib subclassing.
@@ -24,31 +24,35 @@ use crate::config::{Action, ExitButton, Menu};
 
 /// Diameter of the trigger, and of each member's icon circle.
 pub const TRIGGER_DIAMETER: f64 = 72.0;
-pub const ICON_DIAMETER: f64 = 72.0;
+pub const ICON_DIAMETER: f64 = 64.0;
 
 /// A member's whole box: circle plus label below it. The button is the box, so
-/// the hit target is 132x104 while only the circle is drawn. Placement is by
+/// the hit target is the box while only the circle is drawn. Placement is by
 /// CIRCLE centre, not box centre.
-pub const ITEM_W: f64 = 132.0;
-pub const ITEM_H: f64 = 104.0;
+pub const ITEM_W: f64 = 100.0;
+pub const ITEM_H: f64 = 88.0;
 
 const CORNER_MARGIN: f64 = 28.0;
 const EDGE_INSET: f64 = 8.0;
 
-/// Closest two icon circles may come. Circles, not boxes: boxes are mostly empty
-/// space, and requiring those not to overlap needs a radius no small output fits.
-const MIN_ICON_GAP: f64 = 12.0;
+/// Smallest gap left between two member BOXES.
+///
+/// Boxes, not icon circles. Spacing the circles alone was the earlier bug: at
+/// four members the circles sat 84px apart while each box is 96px tall, so every
+/// label landed on the next circle -- "Update Apps" written across Network. A
+/// label is not the empty space the old comment here claimed it was.
+const MIN_BOX_GAP: f64 = 8.0;
 
 /// What the fan wants, and the share of the smaller monitor dimension it settles
 /// for on an output smaller than the laptop's own panel.
 const PREFERRED_RADIUS: f64 = 280.0;
 const RADIUS_FRACTION: f64 = 0.35;
 
-/// Degrees anticlockwise from the bottom edge. Exit gets the top of the arc to
-/// itself; the 28-degree gap below it is the mis-tap mitigation.
-const MEMBER_ARC_WITH_EXIT: (f64, f64) = (10.0, 62.0);
-const MEMBER_ARC_ALONE: (f64, f64) = (10.0, 90.0);
-const EXIT_ANGLE: f64 = 90.0;
+/// Degrees anticlockwise from the bottom edge. Every member is spread evenly
+/// across it, exit included -- exit used to be held back at 90 with a wider gap
+/// below it, which read as a broken arc rather than as deliberate. It is still
+/// the outermost member and still rendered muted.
+const MEMBER_ARC: (f64, f64) = (10.0, 90.0);
 
 /// Positions in the fan's own coordinate space; the fan sits flush in the
 /// bottom-left corner of the surface.
@@ -66,17 +70,15 @@ pub struct Geometry {
 
 impl Geometry {
     pub fn new(members: usize, with_exit: bool, monitor: (f64, f64)) -> Self {
-        let arc = if with_exit {
-            MEMBER_ARC_WITH_EXIT
+        // Exit is simply the last member, spaced like every other one.
+        let total = members + usize::from(with_exit);
+        let all = spread(total, MEMBER_ARC);
+        let (member_angles, exit_angle) = if with_exit {
+            all.split_last()
+                .map_or((&[][..], None), |(last, rest)| (rest, Some(*last)))
         } else {
-            MEMBER_ARC_ALONE
+            (&all[..], None)
         };
-        let member_angles = spread(members, arc);
-
-        let mut all = member_angles.clone();
-        if with_exit {
-            all.push(EXIT_ANGLE);
-        }
         let radius = radius_for(monitor, &all);
 
         // Inset so the widest box clears the left edge at the top of the arc.
@@ -88,7 +90,7 @@ impl Geometry {
             (tx + radius * rad.cos(), ty - radius * rad.sin())
         };
         let items: Vec<(f64, f64)> = member_angles.iter().copied().map(place).collect();
-        let exit = with_exit.then(|| place(EXIT_ANGLE));
+        let exit = exit_angle.map(place);
 
         // Size to what it contains: nothing clipped, no dead space outside it.
         let corners = items.iter().chain(exit.iter());
@@ -125,7 +127,16 @@ fn spread(n: usize, (lo, hi): (f64, f64)) -> Vec<f64> {
 /// The output sets the preferred size; the member count sets the minimum.
 ///
 /// Clamping to a share of the output and stopping there is the trap: six members
-/// on a 1280x720 output would then draw their circles through each other.
+/// on a 1280x720 output would then draw through each other.
+///
+/// Two axis-aligned boxes miss each other when they are clear in EITHER axis, so
+/// each adjacent pair needs whichever separation is cheaper to buy:
+///
+///   dx = r|cos a - cos b| >= ITEM_W + gap    OR    dy = r|sin b - sin a| >= ITEM_H + gap
+///
+/// Solving each for r and taking the smaller gives what that pair needs; the
+/// largest over all pairs is what the fan needs. Exact, so it is a unit test
+/// rather than a constant someone has to re-derive.
 fn radius_for(monitor: (f64, f64), angles: &[f64]) -> f64 {
     let smaller = monitor.0.min(monitor.1);
     let base = if smaller > 0.0 {
@@ -134,15 +145,23 @@ fn radius_for(monitor: (f64, f64), angles: &[f64]) -> f64 {
         PREFERRED_RADIUS
     };
 
-    let tightest = angles
-        .windows(2)
-        .map(|w| w[1] - w[0])
-        .fold(f64::INFINITY, f64::min);
-    if !tightest.is_finite() || tightest <= 0.0 {
-        return base;
+    let mut required: f64 = 0.0;
+    for pair in angles.windows(2) {
+        let (a, b) = (pair[0].to_radians(), pair[1].to_radians());
+        let dx = (a.cos() - b.cos()).abs();
+        let dy = (b.sin() - a.sin()).abs();
+        let need_x = if dx > f64::EPSILON {
+            (ITEM_W + MIN_BOX_GAP) / dx
+        } else {
+            f64::INFINITY
+        };
+        let need_y = if dy > f64::EPSILON {
+            (ITEM_H + MIN_BOX_GAP) / dy
+        } else {
+            f64::INFINITY
+        };
+        required = required.max(need_x.min(need_y));
     }
-    // chord = 2 r sin(delta / 2)
-    let required = (ICON_DIAMETER + MIN_ICON_GAP) / (2.0 * (tightest.to_radians() / 2.0).sin());
     base.max(required)
 }
 
@@ -425,7 +444,7 @@ fn satellite(icon: Option<&str>, label: &str, tooltip: Option<&str>) -> gtk::But
     let text = gtk::Label::new(Some(label));
     text.add_css_class("kiosk-radial-item-label");
     text.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    text.set_max_width_chars(14);
+    text.set_max_width_chars(12);
     column.append(&text);
 
     let button = gtk::Button::new();
@@ -497,21 +516,24 @@ mod tests {
         }
     }
 
-    /// Decides whether the arc looks deliberate or crowded.
+    /// The regression that shipped: spacing only the circles let every label land
+    /// on the next circle. Boxes, so labels are covered.
     #[test]
-    fn no_two_icon_circles_come_closer_than_the_gap() {
+    fn no_two_member_boxes_overlap() {
         for screen in SCREENS {
             for members in 2..=6 {
                 for with_exit in [false, true] {
                     let g = Geometry::new(members, with_exit, screen);
                     let c = circles(&g);
                     for pair in c.windows(2) {
-                        let d = (pair[1].0 - pair[0].0).hypot(pair[1].1 - pair[0].1);
+                        let dx = (pair[1].0 - pair[0].0).abs();
+                        let dy = (pair[1].1 - pair[0].1).abs();
+                        // Axis-aligned boxes miss when clear in EITHER axis.
                         assert!(
-                            d >= ICON_DIAMETER + MIN_ICON_GAP - 0.5,
-                            "{members} members, exit={with_exit}, {screen:?}: circles \
-                             {d} apart, want at least {}",
-                            ICON_DIAMETER + MIN_ICON_GAP
+                            dx >= ITEM_W - 0.5 || dy >= ITEM_H - 0.5,
+                            "{members} members, exit={with_exit}, {screen:?}: boxes \
+                             only dx={dx:.0} dy={dy:.0} apart, need dx>={ITEM_W} or \
+                             dy>={ITEM_H}"
                         );
                     }
                 }
@@ -519,10 +541,11 @@ mod tests {
         }
     }
 
-    /// The mis-tap mitigation, so tidying the arc constants cannot remove it.
+    /// Exit is the outermost member and spaced like every other one. It used to
+    /// be held back at 90 with a much wider gap, which read as a broken arc.
     #[test]
-    fn exit_is_alone_at_the_top_with_a_wider_gap_than_the_members_have() {
-        let g = Geometry::new(3, true, (1920.0, 1080.0));
+    fn exit_is_the_outermost_member_and_evenly_spaced() {
+        let g = Geometry::new(4, true, (1920.0, 1080.0));
         let exit = g.exit.expect("exit was asked for");
 
         // 90 degrees: directly above the trigger, against the left edge.
@@ -533,23 +556,21 @@ mod tests {
         let to_exit = gap(*g.items.last().unwrap(), exit);
         let between = gap(g.items[0], g.items[1]);
         assert!(
-            to_exit > between,
-            "exit sits {to_exit} from the last member but members are {between} apart"
+            (to_exit - between).abs() < 1.0,
+            "exit sits {to_exit:.0} from the last member but members are \
+             {between:.0} apart -- the arc must look evenly dispersed"
         );
     }
 
     /// A smaller output gets a smaller fan; a crowded arc overrides that, which
-    /// is what stops circles overlapping on a small screen.
+    /// is what stops members overlapping on a small screen.
     #[test]
     fn the_radius_follows_the_output_until_the_member_count_needs_more() {
-        let laptop = Geometry::new(3, true, (1920.0, 1080.0));
-        assert_eq!(laptop.radius, PREFERRED_RADIUS);
-
-        let projector = Geometry::new(3, true, (1280.0, 720.0));
+        let sparse_big = Geometry::new(1, true, (1920.0, 1080.0)).radius;
+        let sparse_small = Geometry::new(1, true, (1280.0, 720.0)).radius;
         assert!(
-            projector.radius < laptop.radius,
-            "a smaller output should get a smaller fan, got {}",
-            projector.radius
+            sparse_small < sparse_big,
+            "a smaller output should get a smaller fan: {sparse_small} vs {sparse_big}"
         );
 
         let crowded = Geometry::new(6, true, (1280.0, 720.0));
@@ -560,21 +581,44 @@ mod tests {
         );
     }
 
-    /// The SFO arc is Network, Update, Lock, Power plus exit. Four members still
-    /// resolve to the preferred radius, so adding Lock cost nothing on screen --
-    /// asserted because that was the reason for choosing four over five.
+    /// Members never grow the fan smaller, and the whole thing still fits the
+    /// output it was sized for.
     #[test]
-    fn a_fourth_member_does_not_grow_the_fan() {
-        let laptop = (1920.0, 1080.0);
-        let three = Geometry::new(3, true, laptop);
-        let four = Geometry::new(4, true, laptop);
-        assert_eq!(three.radius, PREFERRED_RADIUS);
-        assert_eq!(four.radius, PREFERRED_RADIUS);
-        assert_eq!(four.width, three.width);
-        assert_eq!(four.height, three.height);
+    fn the_fan_grows_monotonically_and_fits_the_output() {
+        for screen in SCREENS {
+            let radii: Vec<f64> = (1..=6)
+                .map(|n| Geometry::new(n, true, screen).radius)
+                .collect();
+            for pair in radii.windows(2) {
+                assert!(
+                    pair[1] >= pair[0],
+                    "{screen:?}: adding a member shrank the fan: {radii:?}"
+                );
+            }
+            for members in 0..=6 {
+                let g = Geometry::new(members, true, screen);
+                assert!(
+                    g.width <= screen.0 && g.height <= screen.1,
+                    "{members} members on {screen:?}: fan {}x{} does not fit",
+                    g.width,
+                    g.height
+                );
+            }
+        }
+    }
 
-        // Five is where it starts to grow, which is the trade that was declined.
-        assert!(Geometry::new(5, true, laptop).radius > PREFERRED_RADIUS);
+    /// The shipped SFO arc: Network, Update, Lock, Power and exit, on the
+    /// laptop's own panel. The grid is three 280px tiles with 36px gaps, centred
+    /// -- so it starts at x=504 and the fan must not reach it.
+    #[test]
+    fn the_sfo_arc_clears_the_grid_on_the_laptop_panel() {
+        let g = Geometry::new(4, true, (1920.0, 1080.0));
+        let grid_left = (1920.0 - (3.0 * 280.0 + 2.0 * 36.0)) / 2.0;
+        assert!(
+            g.width <= grid_left,
+            "fan is {:.0} wide but the leftmost tile starts at {grid_left:.0}",
+            g.width
+        );
     }
 
     #[test]

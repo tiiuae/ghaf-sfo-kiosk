@@ -4,9 +4,10 @@
 // Styling, inline rather than a GResource: one less build step, one less thing
 // that can be stale on the device.
 //
-// Sizes the arithmetic in radial.rs depends on -- the 72px circles, the 132x104
-// boxes -- are set with set_size_request, not here. Duplicating them here would
-// drift silently.
+// Sizes the arithmetic in radial.rs depends on -- circle diameters, box extents
+// -- are set with set_size_request, not here. Duplicating them would drift
+// silently. The border-radius below is the one exception and must stay at half
+// ICON_DIAMETER.
 
 pub const CSS: &str = "
 window.kiosk-root {
@@ -98,7 +99,7 @@ window.kiosk-root {
     color: #ffffff;
 }
 
-/* The button is the whole 132x104 box; only the circle inside it is drawn. */
+/* The button is the whole ITEM_W x ITEM_H box; only the circle is drawn. */
 .kiosk-radial-item {
     padding: 0;
     background-color: transparent;
@@ -112,7 +113,7 @@ window.kiosk-root {
     box-shadow: none;
 }
 .kiosk-radial-item-icon {
-    border-radius: 36px;
+    border-radius: 32px;
     background-color: #1d2530;
     border: 1px solid #2b3542;
     color: #d4dbe4;
@@ -132,7 +133,8 @@ window.kiosk-root {
 
 /*
  * Exit is the only member that ends the kiosk, so it stays muted until reached
- * for. Its distance up the arc is the other half; see MEMBER_ARC_WITH_EXIT.
+ * for. Being the outermost member on the arc is the other half; it is no longer
+ * held back by a wider gap, which read as a broken arc.
  */
 .kiosk-radial-exit { opacity: 0.55; }
 .kiosk-radial-exit:hover, .kiosk-radial-exit:focus { opacity: 1.0; }
