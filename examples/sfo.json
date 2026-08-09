@@ -58,9 +58,17 @@
       }
     },
     {
+      "id": "settings",
+      "label": "Settings",
+      "icon": "emblem-system-symbolic",
+      "description": "Network, updates, power and exit",
+      "action": { "kind": "menu" }
+    },
+    {
       "id": "network",
       "label": "Network",
       "icon": "network-wireless-symbolic",
+      "menu": "settings",
       "action": { "kind": "exec", "argv": ["cosmic-settings", "network"] }
     },
     {
@@ -68,6 +76,7 @@
       "label": "Update Apps",
       "icon": "software-update-available-symbolic",
       "description": "Install newer applications from the SSD",
+      "menu": "settings",
       "action": {
         "kind": "givc-app",
         "vm": "flatpak-vm",
@@ -85,8 +94,13 @@
       "label": "Power",
       "icon": "system-shutdown-symbolic",
       "description": "Lock, log out, restart or shut down",
+      "menu": "settings",
       "action": { "kind": "exec", "argv": ["cosmic-applet-power"] }
     }
   ],
-  "exit": { "label": "Exit kiosk", "icon": "window-close-symbolic" }
+  "exit": {
+    "label": "Exit kiosk",
+    "icon": "application-exit-symbolic",
+    "menu": "settings"
+  }
 }

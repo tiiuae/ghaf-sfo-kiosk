@@ -6,67 +6,36 @@
 // NEVER call .present() on anything but the layer-shell window: any other
 // gtk::Window becomes an xdg_toplevel, floating above the kiosk and appearing in
 // alt-tab. Hence an in-window banner rather than a dialog, and no libadwaita.
+//
+// The corner menus live in radial.rs, the styling in style.rs and the banner in
+// banner.rs. What is left here is the assembly: status bar, grid, and the stack
+// of overlays that puts a fan above a scrim above the grid.
 
 use gtk::prelude::*;
 
-use crate::actions::{self, Reporter};
+use crate::actions;
+use crate::banner::Banner;
 use crate::config::Kiosk;
+use crate::radial;
 use crate::status;
 
-#[derive(Clone)]
-pub struct Banner {
-    revealer: gtk::Revealer,
-    label: gtk::Label,
-}
-
-impl Banner {
-    fn new() -> Self {
-        let label = gtk::Label::new(None);
-        label.set_wrap(true);
-        label.set_xalign(0.0);
-
-        let revealer = gtk::Revealer::new();
-        revealer.set_transition_type(gtk::RevealerTransitionType::SlideDown);
-        revealer.set_child(Some(&label));
-        revealer.set_reveal_child(false);
-        revealer.add_css_class("kiosk-banner");
-
-        Self { revealer, label }
-    }
-
-    fn show(&self, text: &str, css: &str, seconds: u32) {
-        self.revealer.remove_css_class("kiosk-banner-error");
-        self.revealer.remove_css_class("kiosk-banner-info");
-        self.revealer.add_css_class(css);
-        self.label.set_text(text);
-        self.revealer.set_reveal_child(true);
-
-        let revealer = self.revealer.clone();
-        let expected = text.to_owned();
-        let label = self.label.clone();
-        gtk::glib::timeout_add_seconds_local_once(seconds, move || {
-            // Only hide if we are still showing the same message, so a newer
-            // message is not cut short by an older message's timer.
-            if label.text() == expected {
-                revealer.set_reveal_child(false);
-            }
-        });
-    }
-}
-
-impl Reporter for Banner {
-    fn info(&self, message: &str) {
-        self.show(message, "kiosk-banner-info", 4);
-    }
-    fn error(&self, message: &str) {
-        // Longer, because the operator may need to read it twice and there is
-        // nowhere else for them to look.
-        self.show(message, "kiosk-banner-error", 15);
+/// A leading `/` selects a file; anything else is an icon theme name.
+///
+/// Shared with radial.rs so a button in the grid and the same button in a menu
+/// cannot resolve its icon by different rules.
+pub fn icon_image(icon: &str) -> gtk::Image {
+    if icon.starts_with('/') {
+        gtk::Image::from_file(icon)
+    } else {
+        gtk::Image::from_icon_name(icon)
     }
 }
 
 /// Build the whole kiosk surface content for one output.
-pub fn build(kiosk: &Kiosk, app: &gtk::Application) -> gtk::Widget {
+///
+/// `monitor` is the output's size in logical pixels, which is what decides how
+/// big a fan the corner menus get -- see `radial::Geometry`.
+pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk::Widget {
     let banner = Banner::new();
 
     // ── status bar ──────────────────────────────────────────────────────────
@@ -97,21 +66,17 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application) -> gtk::Widget {
     grid.set_selection_mode(gtk::SelectionMode::None);
     grid.set_max_children_per_line(kiosk.layout.columns);
     grid.set_min_children_per_line(1);
-    grid.set_row_spacing(24);
-    grid.set_column_spacing(24);
+    grid.set_row_spacing(36);
+    grid.set_column_spacing(36);
     grid.set_homogeneous(true);
     grid.add_css_class("kiosk-grid");
 
     for spec in &kiosk.buttons {
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
         content.set_valign(gtk::Align::Center);
         if let Some(icon) = &spec.icon {
-            let image = if icon.starts_with('/') {
-                gtk::Image::from_file(icon)
-            } else {
-                gtk::Image::from_icon_name(icon)
-            };
-            image.set_pixel_size(64);
+            let image = icon_image(icon);
+            image.set_pixel_size(88);
             content.append(&image);
         }
         let label = gtk::Label::new(Some(&spec.label));
@@ -141,27 +106,6 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application) -> gtk::Widget {
         grid.append(&button);
     }
 
-    // ── exit ────────────────────────────────────────────────────────────────
-    //
-    // Deliberately small and in the bottom-right corner: this is a maintenance
-    // affordance, not a normal part of the workflow.
-    let exit = gtk::Button::new();
-    exit.set_icon_name(&kiosk.exit.icon);
-    exit.set_tooltip_text(Some(&kiosk.exit.label));
-    exit.add_css_class("kiosk-exit");
-    exit.set_halign(gtk::Align::End);
-    exit.set_valign(gtk::Align::End);
-    {
-        let app = app.clone();
-        exit.connect_clicked(move |_| {
-            // Quit cleanly. The systemd unit's ExecStopPost is what restores the
-            // COSMIC panel and shortcuts -- doing it here instead would not
-            // survive a crash, which is the case that matters.
-            log::info!("exit button pressed; quitting");
-            app.quit();
-        });
-    }
-
     // ── assembly ────────────────────────────────────────────────────────────
     let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     column.append(&bar);
@@ -171,50 +115,89 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application) -> gtk::Widget {
 
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&column));
-    overlay.add_overlay(&exit);
+
+    // The scrim goes on FIRST so every fan sits above the dimming rather than
+    // under it. It dims the kiosk only: this is a BOTTOM-layer surface, so a
+    // window from another VM stays above it and stays bright.
+    let scrim = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    scrim.add_css_class("kiosk-scrim");
+    scrim.set_can_target(false);
+    overlay.add_overlay(&scrim);
+
+    // ── the corner menus ────────────────────────────────────────────────────
+    let scrim_widget = scrim.clone().upcast::<gtk::Widget>();
+    let fans: Vec<radial::Fan> = kiosk
+        .menus
+        .iter()
+        .map(|menu| {
+            let takes_exit = kiosk.exit.menu.as_deref() == Some(menu.trigger.id.as_str());
+            let fan = radial::build(
+                menu,
+                takes_exit.then_some(&kiosk.exit),
+                monitor,
+                app,
+                &banner,
+                &scrim_widget,
+            );
+            overlay.add_overlay(&fan.widget);
+            fan
+        })
+        .collect();
+
+    let fans = std::rc::Rc::new(fans);
+
+    // Clicking the dimmed area closes whatever opened it.
+    {
+        let fans = fans.clone();
+        let click = gtk::GestureClick::new();
+        click.connect_pressed(move |_, _, _, _| {
+            for fan in fans.iter() {
+                fan.close();
+            }
+        });
+        scrim.add_controller(click);
+    }
+
+    // Escape closes it too. On the overlay rather than on a fan, because the key
+    // press arrives at whichever member has focus and bubbles up from there.
+    {
+        let fans = fans.clone();
+        let keys = gtk::EventControllerKey::new();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape && fans.iter().any(radial::Fan::is_open) {
+                for fan in fans.iter() {
+                    fan.close();
+                }
+                return gtk::glib::Propagation::Stop;
+            }
+            gtk::glib::Propagation::Proceed
+        });
+        overlay.add_controller(keys);
+    }
+
+    // ── exit ────────────────────────────────────────────────────────────────
+    //
+    // Only when no menu claimed it. Deliberately small and in the bottom-right
+    // corner: this is a maintenance affordance, not a normal part of the
+    // workflow, and it stays that way whichever place it ends up in.
+    if kiosk.exit.menu.is_none() {
+        let exit = gtk::Button::new();
+        exit.set_icon_name(&kiosk.exit.icon);
+        exit.set_tooltip_text(Some(&kiosk.exit.label));
+        exit.add_css_class("kiosk-exit");
+        exit.set_halign(gtk::Align::End);
+        exit.set_valign(gtk::Align::End);
+
+        let app = app.clone();
+        exit.connect_clicked(move |_| {
+            // Quit cleanly. The systemd unit's ExecStopPost is what restores the
+            // COSMIC panel and shortcuts -- doing it here instead would not
+            // survive a crash, which is the case that matters.
+            log::info!("exit button pressed; quitting");
+            app.quit();
+        });
+        overlay.add_overlay(&exit);
+    }
+
     overlay.upcast()
 }
-
-/// Styling. Inline rather than a GResource so there is one less build step and
-/// one less thing that can be stale on the device.
-pub const CSS: &str = "
-window.kiosk-root {
-    background-color: #10141a;
-    color: #e8ecf1;
-}
-.kiosk-statusbar {
-    padding: 10px 20px;
-    background-color: #161b23;
-    border-bottom: 1px solid #232a35;
-    font-size: 15px;
-}
-.kiosk-title { font-weight: bold; letter-spacing: 2px; }
-.kiosk-clock { font-size: 17px; font-weight: bold; }
-.kiosk-grid { padding: 40px; }
-.kiosk-button {
-    min-width: 200px;
-    min-height: 160px;
-    padding: 20px;
-    border-radius: 14px;
-    background-color: #1d2530;
-    border: 1px solid #2b3542;
-}
-.kiosk-button:hover { background-color: #26313f; }
-.kiosk-button:active { background-color: #303d4d; }
-.kiosk-button-label { font-size: 19px; font-weight: bold; }
-.kiosk-button-unconfigured { opacity: 0.45; }
-.kiosk-exit {
-    margin: 14px;
-    min-width: 34px;
-    min-height: 34px;
-    padding: 4px;
-    border-radius: 17px;
-    opacity: 0.35;
-    background-color: transparent;
-}
-.kiosk-exit:hover { opacity: 1.0; background-color: #3a2530; }
-.kiosk-banner { padding: 0; }
-.kiosk-banner label { padding: 12px 20px; font-size: 15px; }
-.kiosk-banner-info label { background-color: #1b3048; }
-.kiosk-banner-error label { background-color: #4a1f26; color: #ffd9dd; }
-";
