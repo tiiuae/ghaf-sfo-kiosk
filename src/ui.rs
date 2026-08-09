@@ -100,7 +100,9 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk:
         let action = spec.action.clone();
         let name = spec.label.clone();
         let reporter = banner.clone();
-        button.connect_clicked(move |_| actions::dispatch(&action, &name, &reporter));
+        // Per button, so a slow one cannot block a different one.
+        let busy = actions::Busy::new();
+        button.connect_clicked(move |_| actions::dispatch(&action, &name, &reporter, &busy));
 
         grid.append(&button);
     }

@@ -29,8 +29,30 @@ pub trait Reporter: 'static {
     fn error(&self, message: &str);
 }
 
+/// One button's "a run is already in flight" flag.
+///
+/// Without it every press spawns another process, and for a button whose child
+/// IS a window that is one window per press -- three stacked cosmic-applet-power
+/// windows was the report that prompted this. Cleared when the child exits, or
+/// for an awaited GIVC action when the job leaves the registry, so a second
+/// press cannot re-queue an install that is still running.
+#[derive(Clone, Default)]
+pub struct Busy(std::rc::Rc<std::cell::Cell<bool>>);
+
+impl Busy {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn set(&self, v: bool) {
+        self.0.set(v);
+    }
+    fn get(&self) -> bool {
+        self.0.get()
+    }
+}
+
 /// Run `action`, reporting progress and outcome through `reporter`.
-pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R) {
+pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R, busy: &Busy) {
     let mut await_job: Option<AwaitJob> = None;
     let argv: Vec<String> = match action {
         Action::Exec { argv } => argv.clone(),
@@ -60,6 +82,14 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R)
         }
     };
 
+    // A press while the last run is still going is a press the operator has
+    // already made. Say so rather than stacking another copy.
+    if busy.get() {
+        log::info!("button {label:?} pressed while its previous run is still going; ignoring");
+        reporter.info(&format!("{label} is already open"));
+        return;
+    }
+
     log::info!("button {:?}: exec {:?}", label, argv);
     reporter.info(&format!("Starting {label}…"));
 
@@ -77,8 +107,11 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R)
         }
     };
 
+    busy.set(true);
+
     let reporter = reporter.clone();
     let label = label.to_owned();
+    let busy = busy.clone();
     proc.wait_check_async(gio::Cancellable::NONE, move |result| match result {
         Ok(()) => {
             // Either it did its job and exited, or the operator closed the
@@ -86,9 +119,11 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R)
             // long after the press that caused it.
             log::info!("button {label:?}: child exited cleanly");
             // For a GIVC job this only means "queued". The work is still
-            // running in the other VM.
+            // running in the other VM, so stay busy until the job is gone.
             if let Some(job) = await_job {
-                watch_job(job, label, reporter);
+                watch_job(job, label, reporter, busy);
+            } else {
+                busy.set(false);
             }
         }
         Err(e) => {
@@ -97,6 +132,8 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R)
             let msg = e.to_string();
             let brief: String = msg.chars().take(160).collect();
             reporter.error(&format!("{label} failed: {brief}"));
+            // A failed run must not leave the button wedged.
+            busy.set(false);
         }
     });
 }
@@ -110,7 +147,9 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R)
 /// `--as-json`; scraping that would give a banner that lies the day upstream
 /// reformats it. Better to report honestly what we can observe and leave the
 /// detail to the journal.
-fn watch_job<R: Reporter + Clone>(job: AwaitJob, label: String, reporter: R) {
+/// `busy` is cleared on EVERY terminal branch, including the ones where we give
+/// up. A button left busy is a button that never works again.
+fn watch_job<R: Reporter + Clone>(job: AwaitJob, label: String, reporter: R, busy: Busy) {
     let mut waited = 0u32;
     glib::timeout_add_seconds_local(POLL_SECONDS, move || {
         waited += POLL_SECONDS;
@@ -120,11 +159,13 @@ fn watch_job<R: Reporter + Clone>(job: AwaitJob, label: String, reporter: R) {
             Some(true) => {
                 log::warn!("button {label:?}: still running after {waited}s; no longer watching");
                 reporter.info(&format!("{label} is still running — check the logs"));
+                busy.set(false);
                 glib::ControlFlow::Break
             }
             Some(false) => {
                 log::info!("button {label:?}: job finished after {waited}s");
                 reporter.info(&format!("{label} finished"));
+                busy.set(false);
                 glib::ControlFlow::Break
             }
             // Could not ask. Saying nothing is worse than saying we lost track:
@@ -132,6 +173,7 @@ fn watch_job<R: Reporter + Clone>(job: AwaitJob, label: String, reporter: R) {
             None => {
                 log::error!("button {label:?}: cannot query the GIVC registry; stopped watching");
                 reporter.error(&format!("{label}: lost track of the job — check the logs"));
+                busy.set(false);
                 glib::ControlFlow::Break
             }
         }

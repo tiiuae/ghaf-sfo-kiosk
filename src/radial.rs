@@ -244,10 +244,12 @@ pub fn build(
         let name = item.label.clone();
         let reporter = banner.clone();
         let trig = trigger.clone();
+        // Per member, so a slow one cannot block a different one.
+        let busy = actions::Busy::new();
         button.connect_clicked(move |_| {
             // Close FIRST, so a launched window never appears behind an open fan.
             trig.set_active(false);
-            actions::dispatch(&action, &name, &reporter);
+            actions::dispatch(&action, &name, &reporter, &busy);
         });
 
         fixed.put(&button, collapsed.0, collapsed.1);
@@ -556,6 +558,23 @@ mod tests {
             "six members must outgrow the output's share, got {}",
             crowded.radius
         );
+    }
+
+    /// The SFO arc is Network, Update, Lock, Power plus exit. Four members still
+    /// resolve to the preferred radius, so adding Lock cost nothing on screen --
+    /// asserted because that was the reason for choosing four over five.
+    #[test]
+    fn a_fourth_member_does_not_grow_the_fan() {
+        let laptop = (1920.0, 1080.0);
+        let three = Geometry::new(3, true, laptop);
+        let four = Geometry::new(4, true, laptop);
+        assert_eq!(three.radius, PREFERRED_RADIUS);
+        assert_eq!(four.radius, PREFERRED_RADIUS);
+        assert_eq!(four.width, three.width);
+        assert_eq!(four.height, three.height);
+
+        // Five is where it starts to grow, which is the trade that was declined.
+        assert!(Geometry::new(5, true, laptop).radius > PREFERRED_RADIUS);
     }
 
     #[test]

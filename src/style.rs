@@ -22,6 +22,18 @@ window.kiosk-root {
 .kiosk-title { font-weight: bold; letter-spacing: 2px; }
 .kiosk-clock { font-size: 17px; font-weight: bold; }
 
+/*
+ * EVERY rule below that colours a `button` node must also clear
+ * `background-image` and `box-shadow`.
+ *
+ * GTK4's default theme styles a plain button with
+ * `background-image: linear-gradient(to top, #f6f5f4 2px, #fbfafa)` -- a light
+ * gradient, not a colour. `background-color` paints BEHIND it, so setting the
+ * colour alone leaves the button looking exactly as the theme drew it and the
+ * kiosk renders light-on-dark. The theme repeats the gradient on :hover,
+ * :active and :checked, so each of those needs clearing too.
+ */
+
 /* ── the grid ────────────────────────────────────────────────────────────── */
 .kiosk-grid { padding: 40px; }
 .kiosk-button {
@@ -30,14 +42,18 @@ window.kiosk-root {
     padding: 24px;
     border-radius: 18px;
     background-color: #1d2530;
+    background-image: none;
+    box-shadow: none;
     border: 1px solid #2b3542;
 }
 .kiosk-button:hover {
     background-color: #26313f;
+    background-image: none;
     border-color: #46596f;
 }
 .kiosk-button:active {
     background-color: #303d4d;
+    background-image: none;
     border-color: #6b8299;
 }
 .kiosk-button:focus { border-color: #6ea8ff; }
@@ -63,17 +79,21 @@ window.kiosk-root {
     padding: 0;
     border-radius: 36px;
     background-color: #1d2530;
+    background-image: none;
+    box-shadow: none;
     border: 1px solid #2b3542;
     color: #aab6c4;
 }
 .kiosk-radial-trigger:hover {
     background-color: #26313f;
+    background-image: none;
     border-color: #46596f;
     color: #e8ecf1;
 }
 /* Open state. The cog never becomes an X: exit sits on the same arc. */
 .kiosk-radial-trigger:checked {
     background-color: #33445a;
+    background-image: none;
     border-color: #6ea8ff;
     color: #ffffff;
 }
@@ -81,9 +101,14 @@ window.kiosk-root {
 /* The button is the whole 132x104 box; only the circle inside it is drawn. */
 .kiosk-radial-item {
     padding: 0;
-    background: none;
     background-color: transparent;
+    background-image: none;
     border: none;
+    box-shadow: none;
+}
+.kiosk-radial-item:hover, .kiosk-radial-item:active, .kiosk-radial-item:focus {
+    background-color: transparent;
+    background-image: none;
     box-shadow: none;
 }
 .kiosk-radial-item-icon {
@@ -125,8 +150,15 @@ window.kiosk-root {
     border-radius: 17px;
     opacity: 0.35;
     background-color: transparent;
+    background-image: none;
+    box-shadow: none;
+    border: none;
 }
-.kiosk-exit:hover { opacity: 1.0; background-color: #3a2530; }
+.kiosk-exit:hover {
+    opacity: 1.0;
+    background-color: #3a2530;
+    background-image: none;
+}
 
 /* ── the banner ──────────────────────────────────────────────────────────── */
 .kiosk-banner { padding: 0; }
