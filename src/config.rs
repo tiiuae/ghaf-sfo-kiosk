@@ -85,12 +85,12 @@ pub struct ExitButton {
     pub label: String,
     #[serde(default = "default_exit_icon")]
     pub icon: String,
-    /// Render exit as a member of this menu instead of as the small button in
-    /// the bottom-right corner. Names a button whose action kind is `menu`.
+    /// Render exit as a member of this menu instead of the bottom-right corner
+    /// button. Names a button whose action kind is `menu`.
     ///
-    /// Explicit rather than "exit moves into the menu if there is one": a config
-    /// that does not ask for the new placement keeps the old one, which is what
-    /// makes this field safe to add without moving `version`.
+    /// Explicit rather than implied by a menu existing, so a config that does
+    /// not ask for it keeps the old placement -- which is what makes this field
+    /// safe to add without moving `version`.
     #[serde(default)]
     pub menu: Option<String>,
 }
@@ -99,9 +99,8 @@ fn default_exit_label() -> String {
     "Exit".to_owned()
 }
 
-/// Not `window-close-symbolic`. Exit now sits on the same arc as the menu's own
-/// controls, where an ✕ reads as "close the menu" -- and the one press we cannot
-/// afford the operator to make by accident is the one that drops the kiosk.
+/// Not `window-close-symbolic`: on the menu's arc an ✕ reads as "close the
+/// menu", and exit is the one press we cannot afford by accident.
 fn default_exit_icon() -> String {
     "application-exit-symbolic".to_owned()
 }
@@ -126,14 +125,13 @@ pub struct Button {
     pub description: Option<String>,
     #[serde(default)]
     pub icon: Option<String>,
-    /// Render this button as a member of the named menu rather than in the grid.
-    /// The value is another button's `id`, and that button's action kind must be
-    /// `menu`.
+    /// Render this button in the named menu rather than the grid. The value is
+    /// another button's `id`, whose action kind must be `menu`.
     ///
-    /// A flat field rather than a `children` list on the trigger, because
-    /// ghaf-sfo-laptop's `checks.kiosk-buttons-name-real-apps` walks the button
-    /// array flat: nesting would drop every member of a menu out of the one
-    /// check that proves a GIVC button names something real.
+    /// Flat, not a `children` list on the trigger: ghaf-sfo-laptop's
+    /// `checks.kiosk-buttons-name-real-apps` walks this array flat, and nesting
+    /// would drop menu members out of the check that proves a GIVC button names
+    /// something real.
     #[serde(default)]
     pub menu: Option<String>,
     #[serde(default)]
@@ -202,12 +200,11 @@ pub enum Action {
         target: String,
         await_job: Option<AwaitJob>,
     },
-    /// Not a command at all: this button is a menu trigger. It renders in a
-    /// screen corner and fans the buttons that name it out along an arc.
+    /// Not a command: a menu trigger. Renders in a screen corner and fans the
+    /// buttons naming it out along an arc.
     ///
-    /// A layout concept rather than a product one, which is why the application
-    /// is allowed to know about it: it says where buttons go, never what any of
-    /// them mean.
+    /// Layout, not product -- it says where buttons go, never what they mean,
+    /// which is why the application may interpret it.
     Menu,
     /// Parsed, but not executable. Still renders; says why when pressed.
     Unsupported { reason: String },
@@ -298,11 +295,9 @@ impl Action {
                     await_job: await_job_for(raw, unit),
                 }
             }
-            // Deliberately permissive about the other fields. The nix module
-            // asserts that a trigger carries no exec, vm, app or args; refusing
-            // one here as well would turn a product-side mistake into a dimmed
-            // corner button, which is the one button whose failure hides four
-            // others.
+            // Permissive about the other fields: the nix module already asserts
+            // a trigger carries no exec, vm, app or args, and refusing here too
+            // would dim the one button whose failure hides all its members.
             "menu" => Self::Menu,
             "" => Self::Unsupported {
                 reason: "no action configured".to_owned(),
@@ -323,8 +318,8 @@ pub struct ResolvedButton {
     pub action: Action,
 }
 
-/// A trigger and the buttons that named it, in config order -- which is the
-/// order they occupy the arc, nearest the corner first.
+/// A trigger and its buttons, in config order -- also their order on the arc,
+/// nearest the corner first.
 pub struct Menu {
     pub trigger: ResolvedButton,
     pub items: Vec<ResolvedButton>,
@@ -335,8 +330,7 @@ pub struct Kiosk {
     pub status_bar: StatusBar,
     pub layout: Layout,
     pub exit: ExitButton,
-    /// The buttons rendered in the grid: everything that is not a trigger and
-    /// did not resolve into a menu.
+    /// Grid buttons: everything that is not a trigger and not in a menu.
     pub buttons: Vec<ResolvedButton>,
     /// The menus, in config order.
     pub menus: Vec<Menu>,
@@ -389,10 +383,9 @@ pub fn load(path: &Path) -> Result<Kiosk> {
     let (buttons, menus, exit) = partition(resolved, cfg.exit);
 
     if buttons.is_empty() {
-        // Not fatal -- a corner that fans out to Network and Power still offers
-        // the operator something, which is the line the fatal cases are drawn
-        // on. ghaf-sfo-laptop asserts against it at build time, so reaching here
-        // means a hand-written config.
+        // Not fatal: a corner that fans out still offers the operator something,
+        // which is where the fatal line is drawn. ghaf-sfo-laptop asserts
+        // against it, so reaching here means a hand-written config.
         log::warn!(
             "every button is inside a menu; the kiosk will show a bare corner \
              trigger and no grid"
@@ -409,28 +402,26 @@ pub fn load(path: &Path) -> Result<Kiosk> {
     })
 }
 
-/// Split the resolved buttons into the grid and the menus, and settle where the
-/// exit button lives.
+/// Split the resolved buttons into the grid and the menus, and settle where
+/// exit lives.
 ///
-/// Forgiving in the same way a malformed action is: a `menu` naming something
-/// that is not a trigger puts its button back in the grid rather than making it
-/// disappear. A button the operator can see and press is better evidence of a
-/// misconfiguration than one that silently is not there.
+/// Forgiving like a malformed action: a `menu` naming something that is not a
+/// trigger puts its button back in the grid rather than losing it. A visible
+/// button is better evidence of a misconfiguration than an absent one.
 fn partition(
     resolved: Vec<(Option<String>, ResolvedButton)>,
     mut exit: ExitButton,
 ) -> (Vec<ResolvedButton>, Vec<Menu>, ExitButton) {
-    // Triggers first, in config order, so a member may be declared before the
-    // menu it names. The nix module sorts by `order` and nothing guarantees a
-    // trigger sorts ahead of its own members.
+    // Triggers first, so a member may be declared before the menu it names --
+    // the nix module sorts by `order`, which need not put a trigger first.
     let mut menus: Vec<Menu> = Vec::new();
     let mut members: Vec<(Option<String>, ResolvedButton)> = Vec::new();
 
     for (menu, button) in resolved {
         if matches!(button.action, Action::Menu) {
             if menu.is_some() {
-                // Menus do not nest: an arc drawn from a point already on an arc
-                // has nowhere to go that is still in the corner.
+                // Menus do not nest: an arc from a point already on an arc has
+                // nowhere to go that is still in the corner.
                 log::warn!(
                     "button {:?} is a menu trigger, so its own \"menu\" is ignored",
                     button.id
@@ -473,9 +464,8 @@ fn partition(
         }
     }
 
-    // A trigger with nothing behind it is a control that does nothing when
-    // pressed -- worse than no control, because it reads as a broken kiosk.
-    // Hosting exit counts as having something behind it.
+    // A trigger with nothing behind it does nothing when pressed, which reads
+    // as a broken kiosk. Hosting exit counts as having something.
     menus.retain(|m| {
         let keep = !m.items.is_empty() || exit.menu.as_deref() == Some(m.trigger.id.as_str());
         if !keep {
@@ -521,9 +511,8 @@ mod tests {
         std::fs::write(&p, example).unwrap();
         let k = load(&p).expect("examples/sfo.json must parse");
 
-        // The SPLIT, not a bare count. A regression that swept every button into
-        // the menu, or none of them, would keep a total of seven and leave the
-        // product with a screen nobody meant to ship.
+        // The SPLIT, not a bare count: a regression sweeping every button into
+        // the menu, or none of them, still totals seven.
         assert_eq!(
             k.buttons.iter().map(|b| b.id.as_str()).collect::<Vec<_>>(),
             ["plan", "launch", "clear"],

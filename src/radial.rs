@@ -4,15 +4,11 @@
 // The corner menu: a trigger in the bottom-left corner that fans its members out
 // along a quarter arc bounded by the left and bottom edges.
 //
-// Split in two on purpose. `Geometry` is arithmetic over f64 with no GTK in it,
-// so the two properties that decide whether this looks right -- every member's
-// box on screen, no two icon circles touching -- are unit tests rather than
-// something you check by looking at one laptop. The widget half below is the
-// part that genuinely needs a compositor, and it is kept thin.
+// `Geometry` is GTK-free f64 arithmetic, so "every box on screen" and "no two
+// circles touching" are unit tests rather than an impression of one laptop.
 //
-// Positions are animated by moving children of a gtk::Fixed from a tick
-// callback. Not GSK transforms and not a custom LayoutManager: both would need
-// glib subclassing for an effect two lines of arithmetic already produce.
+// Animated by moving gtk::Fixed children from a tick callback. Not GSK
+// transforms or a custom LayoutManager: both need glib subclassing.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -30,39 +26,32 @@ use crate::config::{Action, ExitButton, Menu};
 pub const TRIGGER_DIAMETER: f64 = 72.0;
 pub const ICON_DIAMETER: f64 = 72.0;
 
-/// A member is a button the size of its whole box -- circle plus label -- so the
-/// touch target is the whole box while only the circle is drawn. The circle sits
-/// at the top of the box, which is why placement is by circle centre and not by
-/// box centre.
+/// A member's whole box: circle plus label below it. The button is the box, so
+/// the hit target is 132x104 while only the circle is drawn. Placement is by
+/// CIRCLE centre, not box centre.
 pub const ITEM_W: f64 = 132.0;
 pub const ITEM_H: f64 = 104.0;
 
-/// Gap from the fan's own edges to the trigger, and the smallest gap any box is
-/// allowed to have.
 const CORNER_MARGIN: f64 = 28.0;
 const EDGE_INSET: f64 = 8.0;
 
 /// Closest two icon circles may come. Circles, not boxes: boxes are mostly empty
-/// space around a centred label, and demanding they never overlap would push the
-/// radius past anything that fits on a small output.
+/// space, and requiring those not to overlap needs a radius no small output fits.
 const MIN_ICON_GAP: f64 = 12.0;
 
-/// What the fan wants, and the share of the smaller monitor dimension it will
-/// settle for -- a projector at 1280x720 should not get the laptop's fan.
+/// What the fan wants, and the share of the smaller monitor dimension it settles
+/// for on an output smaller than the laptop's own panel.
 const PREFERRED_RADIUS: f64 = 280.0;
 const RADIUS_FRACTION: f64 = 0.35;
 
-/// Degrees anticlockwise from the bottom edge. When exit is a member it gets the
-/// top of the arc to itself: it is the one press in this menu we cannot afford
-/// the operator to make by accident, and the 28-degree gap below it is the
-/// mitigation, not decoration.
+/// Degrees anticlockwise from the bottom edge. Exit gets the top of the arc to
+/// itself; the 28-degree gap below it is the mis-tap mitigation.
 const MEMBER_ARC_WITH_EXIT: (f64, f64) = (10.0, 62.0);
 const MEMBER_ARC_ALONE: (f64, f64) = (10.0, 90.0);
 const EXIT_ANGLE: f64 = 90.0;
 
-/// Where everything goes, in the fan's own coordinate space. The fan is placed
-/// flush into the bottom-left corner of the surface, so these are also screen
-/// coordinates offset by the surface height.
+/// Positions in the fan's own coordinate space; the fan sits flush in the
+/// bottom-left corner of the surface.
 pub struct Geometry {
     pub width: f64,
     pub height: f64,
@@ -90,10 +79,8 @@ impl Geometry {
         }
         let radius = radius_for(monitor, &all);
 
-        // Inset far enough that the widest box still clears the left edge when
-        // it sits at the top of the arc, directly above the trigger.
+        // Inset so the widest box clears the left edge at the top of the arc.
         let tx = (CORNER_MARGIN + TRIGGER_DIAMETER / 2.0).max(ITEM_W / 2.0 + EDGE_INSET);
-        // ... and high enough that the topmost circle's box clears the top.
         let ty = radius + ICON_DIAMETER / 2.0 + EDGE_INSET;
 
         let place = |deg: f64| {
@@ -103,8 +90,7 @@ impl Geometry {
         let items: Vec<(f64, f64)> = member_angles.iter().copied().map(place).collect();
         let exit = with_exit.then(|| place(EXIT_ANGLE));
 
-        // Size the fan around what it actually contains, so nothing is clipped
-        // and nothing outside it is covered by dead space.
+        // Size to what it contains: nothing clipped, no dead space outside it.
         let corners = items.iter().chain(exit.iter());
         let right = corners
             .clone()
@@ -125,8 +111,7 @@ impl Geometry {
     }
 }
 
-/// `n` angles across `[lo, hi]`. One member takes the middle of the span rather
-/// than an end of it, which is the only reading that is not arbitrary.
+/// `n` angles across `[lo, hi]`. A single member takes the middle of the span.
 fn spread(n: usize, (lo, hi): (f64, f64)) -> Vec<f64> {
     match n {
         0 => Vec::new(),
@@ -137,13 +122,10 @@ fn spread(n: usize, (lo, hi): (f64, f64)) -> Vec<f64> {
     }
 }
 
-/// The output decides how big the fan would like to be; the member count decides
-/// how small it is allowed to be.
+/// The output sets the preferred size; the member count sets the minimum.
 ///
-/// Clamping down to a share of the output and stopping there is the trap: five
-/// members on a 1280x720 projector would then draw their circles through each
-/// other. A fan that is large for its screen is worse-looking than one whose
-/// icons overlap is unusable, so the count wins.
+/// Clamping to a share of the output and stopping there is the trap: six members
+/// on a 1280x720 output would then draw their circles through each other.
 fn radius_for(monitor: (f64, f64), angles: &[f64]) -> f64 {
     let smaller = monitor.0.min(monitor.1);
     let base = if smaller > 0.0 {
@@ -177,8 +159,8 @@ pub struct Fan {
 }
 
 impl Fan {
-    /// Close the fan from anywhere. Everything routes through the trigger's
-    /// `toggled` signal, so there is exactly one path that opens or closes it.
+    /// Close from anywhere. Everything routes through the trigger's `toggled`
+    /// signal, so there is one path that opens or closes.
     pub fn close(&self) {
         self.trigger.set_active(false);
     }
@@ -190,8 +172,7 @@ impl Fan {
 
 /// Build one menu's corner trigger and its arc.
 ///
-/// `exit` is `Some` only when the config placed the exit button in *this* menu;
-/// otherwise ui.rs keeps it as the small button in the opposite corner.
+/// `exit` is `Some` only when the config put the exit button in *this* menu.
 pub fn build(
     menu: &Menu,
     exit: Option<&ExitButton>,
@@ -201,8 +182,8 @@ pub fn build(
     scrim: &gtk::Widget,
 ) -> Fan {
     let geom = Geometry::new(menu.items.len(), exit.is_some(), monitor);
-    // The radius is derived from two things that are not both obvious on a
-    // device -- the output size and the member count -- so say what came out.
+    // Radius depends on output size and member count; neither is visible on a
+    // device, so log what it resolved to.
     log::info!(
         "menu {:?}: {} member(s){}, radius {:.0} on a {:.0}x{:.0} output",
         menu.trigger.id,
@@ -219,10 +200,9 @@ pub fn build(
     fixed.set_valign(gtk::Align::End);
     fixed.set_size_request(geom.width.ceil() as i32, geom.height.ceil() as i32);
 
-    // A ToggleButton, so open/closed state and its `:checked` styling come from
-    // GTK. The cog deliberately does NOT become an X when open: exit now sits on
-    // the same arc, and two X's a thumb's width apart is the mistake this whole
-    // layout is arranged to avoid.
+    // ToggleButton for open/closed state and `:checked` styling. The cog does
+    // NOT become an X when open: exit sits on the same arc, and two X's a
+    // thumb's width apart is the mis-tap this layout exists to avoid.
     let trigger = gtk::ToggleButton::new();
     trigger.add_css_class("kiosk-radial-trigger");
     trigger.set_size_request(TRIGGER_DIAMETER as i32, TRIGGER_DIAMETER as i32);
@@ -240,9 +220,9 @@ pub fn build(
         geom.trigger.1 - TRIGGER_DIAMETER / 2.0,
     );
 
-    // Box position from a circle centre: the circle is at the top of the box.
+    // Box position from a circle centre; the circle is at the top of the box.
     let box_at = |c: (f64, f64)| (c.0 - ITEM_W / 2.0, c.1 - ICON_DIAMETER / 2.0);
-    // Where a member rests before it has fanned out: under the trigger.
+    // Where members rest while closed: under the trigger.
     let collapsed = box_at(geom.trigger);
 
     let mut sats: Vec<gtk::Button> = Vec::new();
@@ -255,8 +235,7 @@ pub fn build(
             item.description.as_deref(),
         );
         button.add_css_class(&format!("kiosk-radial-item-{}", item.id));
-        // Same treatment as the grid: an unrunnable button still renders,
-        // dimmed, and says why when pressed.
+        // As in the grid: unrunnable still renders, dimmed, and says why.
         if matches!(item.action, Action::Unsupported { .. }) {
             button.add_css_class("kiosk-button-unconfigured");
         }
@@ -266,8 +245,7 @@ pub fn build(
         let reporter = banner.clone();
         let trig = trigger.clone();
         button.connect_clicked(move |_| {
-            // Close FIRST. An application launched from here must never come up
-            // behind an open fan.
+            // Close FIRST, so a launched window never appears behind an open fan.
             trig.set_active(false);
             actions::dispatch(&action, &name, &reporter);
         });
@@ -285,9 +263,8 @@ pub fn build(
 
         let app = app.clone();
         button.connect_clicked(move |_| {
-            // Quit cleanly. The systemd unit's ExecStopPost is what restores the
-            // COSMIC panel and shortcuts -- doing it here instead would not
-            // survive a crash, which is the case that matters.
+            // Quit only. The unit's ExecStopPost restores the panel and
+            // shortcuts; doing it here would not survive a crash.
             log::info!("exit button pressed; quitting");
             app.quit();
         });
@@ -300,8 +277,8 @@ pub fn build(
 
     let sats = Rc::new(sats);
     let targets = Rc::new(targets);
-    // Bumped on every toggle. An animation whose generation is stale stops,
-    // which is how a fan closed halfway through opening does the right thing.
+    // Bumped per toggle; a tick callback with a stale generation stops itself,
+    // so closing halfway through opening works.
     let generation = Rc::new(Cell::new(0u64));
 
     trigger.connect_toggled({
@@ -327,7 +304,7 @@ pub fn build(
                 scrim.set_can_target(false);
             }
 
-            // Unrealized, so there is no frame clock to drive anything: snap.
+            // Unrealized: no frame clock to animate with, so snap.
             let Some(_) = fixed.frame_clock() else {
                 settle(&fixed, &sats, &targets, collapsed, opening);
                 return;
@@ -355,8 +332,7 @@ pub fn build(
                 let total = DURATION_MS + STAGGER_MS * (n.saturating_sub(1)) as f64;
 
                 for (i, s) in sats2.iter().enumerate() {
-                    // Closing runs the stagger backwards, so the fan folds from
-                    // its far end rather than collapsing from the corner out.
+                    // Closing runs the stagger backwards: folds from the far end.
                     let step = if opening { i } else { n - 1 - i };
                     let p = ((ms - STAGGER_MS * step as f64) / DURATION_MS).clamp(0.0, 1.0);
                     let travelled = if opening {
@@ -375,8 +351,8 @@ pub fn build(
 
                 if ms >= total {
                     if !opening {
-                        // Out of the focus chain and out of hit-testing. An
-                        // opacity-0 Fixed child is still both.
+                        // An opacity-0 Fixed child is still focusable and still
+                        // clickable; hiding takes it out of both.
                         for s in sats2.iter() {
                             s.set_visible(false);
                         }
@@ -388,10 +364,8 @@ pub fn build(
             });
 
             if opening {
-                // On an idle, not here. The members were hidden a few lines
-                // ago and have not been through a layout pass yet; grabbing
-                // focus on a widget that is not mappable yet fails silently,
-                // and the symptom is Tab starting from nowhere.
+                // On an idle: the members have not had a layout pass yet, and
+                // grab_focus on a not-yet-mappable widget fails silently.
                 if let Some(first) = sats.first().cloned() {
                     glib::idle_add_local_once(move || {
                         if first.is_visible() {
@@ -427,9 +401,8 @@ fn settle(
 
 /// One member: a button the size of the whole box, drawing only a circle.
 ///
-/// The button rather than the circle is the hit target on purpose -- 132x104
-/// instead of 72x72 -- because this is a corner control on a machine that may
-/// have a touchscreen, and nothing here falls back to hover.
+/// The hit target is the box (132x104), not the circle (72x72) -- the panel may
+/// be a touchscreen and nothing here falls back to hover.
 fn satellite(icon: Option<&str>, label: &str, tooltip: Option<&str>) -> gtk::Button {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 6);
     column.set_valign(gtk::Align::Start);
@@ -463,8 +436,8 @@ fn satellite(icon: Option<&str>, label: &str, tooltip: Option<&str>) -> gtk::But
     button
 }
 
-/// A small overshoot at the end of the travel. It is what makes this read as a
-/// fan opening rather than four buttons appearing.
+/// Small overshoot at the end of the travel: reads as a fan opening rather than
+/// buttons appearing.
 fn ease_out_back(p: f64) -> f64 {
     const C1: f64 = 1.70158;
     const C3: f64 = C1 + 1.0;
@@ -472,8 +445,7 @@ fn ease_out_back(p: f64) -> f64 {
     1.0 + C3 * q * q * q + C1 * q * q
 }
 
-/// No overshoot on the way back in: an overshoot on close reads as a bounce off
-/// the corner.
+/// No overshoot on close: it would read as a bounce off the corner.
 fn ease_out_cubic(p: f64) -> f64 {
     let q = 1.0 - p;
     1.0 - q * q * q
@@ -483,8 +455,7 @@ fn ease_out_cubic(p: f64) -> f64 {
 mod tests {
     use super::*;
 
-    /// The laptop's own panel, the taller variant of it, a projector, and a
-    /// small 4:3 display.
+    /// The laptop panel, its taller variant, a projector, a small 4:3 display.
     const SCREENS: [(f64, f64); 4] = [
         (1920.0, 1080.0),
         (1920.0, 1200.0),
@@ -496,8 +467,7 @@ mod tests {
         g.items.iter().chain(g.exit.iter()).copied().collect()
     }
 
-    /// "Bounded by the left vertical edge and the bottom edge" as an assertion
-    /// rather than as an impression of one screenshot.
+    /// "Bounded by the left and bottom edges", asserted rather than eyeballed.
     #[test]
     fn every_member_box_stays_inside_the_fan() {
         for screen in SCREENS {
@@ -525,7 +495,7 @@ mod tests {
         }
     }
 
-    /// The property that decides whether the arc looks deliberate or crowded.
+    /// Decides whether the arc looks deliberate or crowded.
     #[test]
     fn no_two_icon_circles_come_closer_than_the_gap() {
         for screen in SCREENS {
@@ -547,8 +517,7 @@ mod tests {
         }
     }
 
-    /// The mis-tap mitigation, asserted so a later tidy-up of the arc constants
-    /// cannot quietly remove it.
+    /// The mis-tap mitigation, so tidying the arc constants cannot remove it.
     #[test]
     fn exit_is_alone_at_the_top_with_a_wider_gap_than_the_members_have() {
         let g = Geometry::new(3, true, (1920.0, 1080.0));
@@ -567,9 +536,8 @@ mod tests {
         );
     }
 
-    /// A projector gets a smaller fan; a crowded arc gets a bigger one whatever
-    /// the output says. The second half is the one that stops circles from
-    /// overlapping on a small screen.
+    /// A smaller output gets a smaller fan; a crowded arc overrides that, which
+    /// is what stops circles overlapping on a small screen.
     #[test]
     fn the_radius_follows_the_output_until_the_member_count_needs_more() {
         let laptop = Geometry::new(3, true, (1920.0, 1080.0));

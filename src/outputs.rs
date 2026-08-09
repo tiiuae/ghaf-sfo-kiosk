@@ -71,8 +71,8 @@ fn reconcile(
             "output added ({}); creating a kiosk surface",
             monitor.connector().unwrap_or_else(|| "unknown".into())
         );
-        // The output's own size, not the surface's: the surface is not allocated
-        // yet, and this is what decides how big a fan the corner menus get.
+        // The output's size, not the surface's -- the surface is not allocated
+        // yet. It sets the corner menus' fan radius.
         let size = monitor.geometry();
         let content = crate::ui::build(
             kiosk,

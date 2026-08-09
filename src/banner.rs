@@ -3,13 +3,11 @@
 //
 // The one place the kiosk talks back to the operator.
 //
-// An in-window revealer rather than a dialog, because NEVER call .present() on
-// anything but the layer-shell window: any other gtk::Window becomes an
-// xdg_toplevel, floating above the kiosk and appearing in alt-tab. That rule is
-// also why there is no libadwaita here.
+// An in-window revealer, not a dialog: NEVER call .present() on anything but the
+// layer-shell window, or it becomes an xdg_toplevel floating above the kiosk and
+// listed in alt-tab. Same reason there is no libadwaita.
 //
-// Its own module so that both the button grid and the radial menu can report
-// through it without ui.rs and radial.rs having to reach into each other.
+// Its own module so the grid and the radial menu can both report through it.
 
 use gtk::prelude::*;
 
