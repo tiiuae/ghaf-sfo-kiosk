@@ -8,9 +8,12 @@
 // buttons in its config file. Adding a sixth is a change in ghaf-sfo-laptop.
 
 mod actions;
+mod banner;
 mod config;
 mod outputs;
+mod radial;
 mod status;
+mod style;
 mod surface;
 mod ui;
 
@@ -70,14 +73,26 @@ fn main() -> std::process::ExitCode {
     };
 
     if args.check {
+        // Grid and menus separately: "six buttons" is no longer the question a
+        // human holding a generated config is asking, since a button that ends
+        // up in the wrong one of the two is on screen either way.
+        let in_menus: usize = kiosk.menus.iter().map(|m| m.items.len()).sum();
+        let unconfigured = kiosk
+            .buttons
+            .iter()
+            .chain(kiosk.menus.iter().flat_map(|m| &m.items))
+            .filter(|b| matches!(b.action, config::Action::Unsupported { .. }))
+            .count();
         println!(
-            "ok: {} button(s), {} unconfigured",
+            "ok: {} button(s) in the grid, {} in {} menu(s), {} unconfigured; exit is {}",
             kiosk.buttons.len(),
-            kiosk
-                .buttons
-                .iter()
-                .filter(|b| matches!(b.action, config::Action::Unsupported { .. }))
-                .count()
+            in_menus,
+            kiosk.menus.len(),
+            unconfigured,
+            match &kiosk.exit.menu {
+                Some(m) => format!("in menu {m:?}"),
+                None => "the corner button".to_owned(),
+            }
         );
         return std::process::ExitCode::SUCCESS;
     }
@@ -119,7 +134,7 @@ fn main() -> std::process::ExitCode {
     let kiosk = std::rc::Rc::new(kiosk);
     app.connect_activate(move |app| {
         let provider = gtk::CssProvider::new();
-        provider.load_from_string(ui::CSS);
+        provider.load_from_string(style::CSS);
         if let Some(display) = gtk::gdk::Display::default() {
             gtk::style_context_add_provider_for_display(
                 &display,

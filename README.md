@@ -13,6 +13,28 @@ It is **config-driven**. This binary contains no knowledge of what the buttons d
 list in `/etc/sfo-kiosk/config.json`, which the SFO nix module generates. Adding a button is a
 change there, not here.
 
+## What is on screen
+
+```
+┌────────────────────────────────────────────────────┐
+│ SFO                 12:45              ▂▄   87%    │  status bar
+├────────────────────────────────────────────────────┤
+│                                                    │
+│    ┏━━━━━━━━━━┓  ┏━━━━━━━━━━┓  ┏━━━━━━━━━━┓        │  the grid: the work
+│    ┃    ◉     ┃  ┃    ▶     ┃  ┃    ✕     ┃        │
+│    ┃   Plan   ┃  ┃  Launch  ┃  ┃  Clear   ┃        │
+│    ┗━━━━━━━━━━┛  ┗━━━━━━━━━━┛  ┗━━━━━━━━━━┛        │
+│                                                    │
+│  (⚙)                                               │  a corner menu:
+└────────────────────────────────────────────────────┘  everything else
+```
+
+The trigger fans its members out along a quarter arc bounded by the left and bottom edges. Which
+buttons are in the grid and which are behind the trigger is a decision in the config, not here — see
+[Menus](docs/config.md#menus). The arc arithmetic lives in `src/radial.rs` with no GTK in it, so
+"every member stays on screen" and "no two icons touch" are unit tests rather than something you
+check by looking at one laptop.
+
 ## Why it is a layer-shell surface, not a window
 
 "Always on top", "apps come on top of it" and "the kiosk is the desktop" only reconcile one way: the

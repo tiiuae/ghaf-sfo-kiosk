@@ -43,6 +43,14 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R)
             await_job = job.clone();
             argv.clone()
         }
+        // A trigger's presses are handled by the fan itself, so reaching here
+        // means the button was rendered in the grid -- which config::partition
+        // never does with a trigger. Say so rather than panicking: the operator
+        // still gets a working kiosk and the journal gets the fact.
+        Action::Menu => {
+            log::warn!("button {label:?} is a menu trigger but was pressed as an ordinary button");
+            return;
+        }
         Action::Unsupported { reason } => {
             // Not an error to shout about — it is a configuration problem the
             // operator can do nothing about. Say precisely what is wrong so

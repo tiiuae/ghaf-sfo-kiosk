@@ -71,7 +71,14 @@ fn reconcile(
             "output added ({}); creating a kiosk surface",
             monitor.connector().unwrap_or_else(|| "unknown".into())
         );
-        let content = crate::ui::build(kiosk, app);
+        // The output's own size, not the surface's: the surface is not allocated
+        // yet, and this is what decides how big a fan the corner menus get.
+        let size = monitor.geometry();
+        let content = crate::ui::build(
+            kiosk,
+            app,
+            (f64::from(size.width()), f64::from(size.height())),
+        );
         let window = crate::surface::build(app, &monitor, &content);
         window.present();
         held.push((monitor, window));

@@ -13,14 +13,14 @@ what the kiosk is actually running.
 
 ## Top level
 
-| Key          | Type   | Default | Meaning                                       |
-| ------------ | ------ | ------- | --------------------------------------------- |
-| `version`    | int    | —       | Schema version. **Required.** See below.      |
-| `title`      | string | `"SFO"` | Shown at the left of the status bar.          |
-| `buttons`    | array  | —       | **Required, non-empty.**                      |
-| `status_bar` | object | —       | Clock, battery, network.                      |
-| `layout`     | object | —       | `columns` (int, default 3).                   |
-| `exit`       | object | —       | `label` and `icon` for the small exit button. |
+| Key          | Type   | Default | Meaning                                  |
+| ------------ | ------ | ------- | ---------------------------------------- |
+| `version`    | int    | —       | Schema version. **Required.** See below. |
+| `title`      | string | `"SFO"` | Shown at the left of the status bar.     |
+| `buttons`    | array  | —       | **Required, non-empty.**                 |
+| `status_bar` | object | —       | Clock, battery, network.                 |
+| `layout`     | object | —       | `columns` (int, default 3).              |
+| `exit`       | object | —       | `label`, `icon`, and optionally `menu`.  |
 
 ### `version` is not ceremony
 
@@ -32,6 +32,17 @@ diagnosable failure the system can produce.
 Within a version, **unknown fields are ignored rather than rejected**, so a newer nix module adding a
 field to an existing action kind does not brick an older binary.
 
+That is what let menus arrive without moving `version`, and it is worth spelling out because "we
+added a feature and left the version alone" normally means someone forgot:
+
+| Direction              | What the operator sees                                                                                                                                                      |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Old binary, new config | `menu` and `exit.menu` are unknown fields, so ignored; `"kind": "menu"` is an unknown kind, so one dimmed trigger. Every real button is in the grid, exit is in the corner. |
+| New binary, old config | No trigger and no `menu` fields, so every button is in the grid and exit is in the corner.                                                                                  |
+
+Both directions land on the pre-menu interface rather than on a dead kiosk. Bumping to `2` would
+instead make an older binary refuse to start over a change to where buttons sit.
+
 ## Buttons
 
 ```jsonc
@@ -40,12 +51,77 @@ field to an existing action kind does not brick an older binary.
   "label": "Plan",                    // what the operator reads
   "description": "Mission planning",  // tooltip, optional
   "icon": "map-symbolic",             // theme name, or an absolute path
+  "menu": "settings",                 // optional; see "Menus" below
   "action": { ... }
 }
 ```
 
 Order comes from the nix module, which sorts before writing; the array order here is the display
 order.
+
+## Menus
+
+A button whose action kind is `menu` is not a command. It renders as a round trigger in the
+bottom-left corner, and every button carrying `"menu": "<its id>"` fans out from it along a quarter
+arc bounded by the left and bottom edges. Everything else stays in the grid.
+
+```jsonc
+{ "id": "settings", "label": "Settings", "icon": "emblem-system-symbolic",
+  "action": { "kind": "menu" } },
+
+{ "id": "network", "label": "Network", "menu": "settings",
+  "action": { "kind": "exec", "argv": ["cosmic-settings", "network"] } }
+```
+
+**A flat field, not a `children` list on the trigger.** `ghaf-sfo-laptop`'s
+`checks.kiosk-buttons-name-real-apps` walks the button array flat; nesting would drop every member of
+a menu out of the one check that proves a GIVC button names something real.
+
+Members occupy the arc in array order, nearest the corner first. How large the fan is depends on the
+output and on how many members there are — a projector gets a smaller one, and a crowded arc grows
+past that rather than letting two icons overlap. The kiosk logs what it settled on:
+
+```
+menu "settings": 3 member(s) plus exit, radius 280 on a 1920x1080 output
+```
+
+### Exit can live in a menu
+
+```jsonc
+"exit": {
+  "label": "Exit kiosk",
+  "icon": "application-exit-symbolic",
+  "menu": "settings"          // omit to keep the small button in the bottom-right corner
+}
+```
+
+Exit always takes the **top** of the arc, alone, with a wider gap below it than the members have
+between them, and it renders muted. That is not decoration: it is the only member that ends the
+kiosk, and moving it from a 34px corner button into a fan the operator opens to reach Network makes
+it materially easier to hit. For the same reason the trigger keeps its own icon when open rather than
+becoming an ✕, and `exit.icon` defaults to `application-exit-symbolic` — an ✕ on that arc reads as
+"close the menu".
+
+`exit.menu` is explicit rather than "exit moves into the menu if there is one", so a config that does
+not ask for the new placement keeps the old one.
+
+### What is forgiving, and what is not
+
+| Condition                                   | Result                                                  |
+| ------------------------------------------- | ------------------------------------------------------- |
+| `menu` names a button that does not exist   | Warned; the button renders **in the grid**              |
+| `menu` names a button that is not a trigger | Warned; the button renders **in the grid**              |
+| A trigger that also carries `menu`          | Warned; menus do not nest, so its own `menu` is ignored |
+| A trigger with no members and no exit       | Warned; the trigger is **not rendered**                 |
+| `exit.menu` names nothing                   | Warned; exit stays the bottom-right corner button       |
+
+A button that lands back in the grid is visible and pressable, which is better evidence of a
+misconfiguration than one that is silently absent. A trigger with nothing behind it is the exception:
+a control that does nothing when pressed reads as a broken kiosk, so it is dropped instead.
+
+**One trigger.** Every trigger is anchored to the bottom-left corner, so a second one is drawn on top
+of the first with its arc through the first's. The contract has no way to say "the other corner" yet.
+`ghaf-sfo-laptop` asserts against it at build time; this binary will render both and look broken.
 
 ## Actions
 
@@ -86,6 +162,18 @@ On `args`: GIVC validates every argument in the target agent against declared ty
 ghaf's app-VM wiring never sets. This is why ghaf smuggles flatpak app ids through as
 `http://<app-id>`; the receiving script strips the scheme. Prefer passing nothing at all and baking
 policy into the target VM.
+
+### `menu` — a corner trigger, not a command
+
+```json
+{ "kind": "menu" }
+```
+
+The only action kind the application interprets for itself, and it is allowed to because it is a
+_layout_ concept: it says where buttons go, never what any of them mean. See [Menus](#menus). Other
+fields on the action are ignored — the nix module asserts a trigger carries no `exec`, `vm`, `app` or
+`args`, and refusing them here as well would turn a product-side slip into a dimmed corner button,
+which is the one button whose failure hides several others.
 
 ## What happens when something is wrong
 
