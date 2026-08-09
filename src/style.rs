@@ -1,17 +1,12 @@
 // SPDX-FileCopyrightText: 2026 TII (SSRC) and the Ghaf contributors
 // SPDX-License-Identifier: Apache-2.0
 //
-// Styling, inline rather than a GResource so there is one less build step and
-// one less thing that can be stale on the device.
+// Styling, inline rather than a GResource: one less build step, one less thing
+// that can be stale on the device.
 //
-// Its own module now that it carries the radial menu as well as the grid: ui.rs
-// is the widget tree and this is what it looks like, and neither is easier to
-// read wrapped around the other.
-//
-// Sizes that the layout arithmetic in radial.rs also depends on -- the 72px
-// circles, the 132x104 boxes -- are set from Rust with set_size_request, not
-// here. A number that exists in two places drifts, and this is the copy that
-// would drift silently.
+// Sizes the arithmetic in radial.rs depends on -- the 72px circles, the 132x104
+// boxes -- are set with set_size_request, not here. Duplicating them here would
+// drift silently.
 
 pub const CSS: &str = "
 window.kiosk-root {
@@ -51,10 +46,9 @@ window.kiosk-root {
 
 /* ── the radial menu ─────────────────────────────────────────────────────── */
 /*
- * The scrim stays mapped and loses its opacity instead of being hidden, so the
- * fade is a CSS transition rather than another tick callback. It is
- * can_target(false) while closed, which is what stops an invisible sheet eating
- * every click on the grid.
+ * The scrim stays mapped and fades by opacity, so the transition is CSS rather
+ * than another tick callback. can_target(false) while closed stops an invisible
+ * sheet eating every click on the grid.
  */
 .kiosk-scrim {
     background-color: rgba(6, 9, 13, 0.66);
@@ -84,10 +78,7 @@ window.kiosk-root {
     color: #ffffff;
 }
 
-/*
- * The button is the whole 132x104 box so the touch target is generous, but only
- * the circle inside it is drawn.
- */
+/* The button is the whole 132x104 box; only the circle inside it is drawn. */
 .kiosk-radial-item {
     padding: 0;
     background: none;
@@ -115,9 +106,8 @@ window.kiosk-root {
 }
 
 /*
- * Exit is the only member that ends the kiosk, so it is muted until it is
- * deliberately reached for. Its distance up the arc is the other half of that;
- * see MEMBER_ARC_WITH_EXIT in radial.rs.
+ * Exit is the only member that ends the kiosk, so it stays muted until reached
+ * for. Its distance up the arc is the other half; see MEMBER_ARC_WITH_EXIT.
  */
 .kiosk-radial-exit { opacity: 0.55; }
 .kiosk-radial-exit:hover, .kiosk-radial-exit:focus { opacity: 1.0; }

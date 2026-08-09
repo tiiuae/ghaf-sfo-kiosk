@@ -73,9 +73,8 @@ fn main() -> std::process::ExitCode {
     };
 
     if args.check {
-        // Grid and menus separately: "six buttons" is no longer the question a
-        // human holding a generated config is asking, since a button that ends
-        // up in the wrong one of the two is on screen either way.
+        // Grid and menus separately: a button in the wrong one of the two is on
+        // screen either way, so a bare total answers nothing.
         let in_menus: usize = kiosk.menus.iter().map(|m| m.items.len()).sum();
         let unconfigured = kiosk
             .buttons

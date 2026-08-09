@@ -7,9 +7,9 @@
 // gtk::Window becomes an xdg_toplevel, floating above the kiosk and appearing in
 // alt-tab. Hence an in-window banner rather than a dialog, and no libadwaita.
 //
-// The corner menus live in radial.rs, the styling in style.rs and the banner in
-// banner.rs. What is left here is the assembly: status bar, grid, and the stack
-// of overlays that puts a fan above a scrim above the grid.
+// Corner menus are in radial.rs, styling in style.rs, the banner in banner.rs.
+// What is left here is assembly: status bar, grid, and the overlay stack that
+// puts a fan above a scrim above the grid.
 
 use gtk::prelude::*;
 
@@ -21,8 +21,7 @@ use crate::status;
 
 /// A leading `/` selects a file; anything else is an icon theme name.
 ///
-/// Shared with radial.rs so a button in the grid and the same button in a menu
-/// cannot resolve its icon by different rules.
+/// Shared with radial.rs so grid and menu resolve icons by the same rule.
 pub fn icon_image(icon: &str) -> gtk::Image {
     if icon.starts_with('/') {
         gtk::Image::from_file(icon)
@@ -33,8 +32,8 @@ pub fn icon_image(icon: &str) -> gtk::Image {
 
 /// Build the whole kiosk surface content for one output.
 ///
-/// `monitor` is the output's size in logical pixels, which is what decides how
-/// big a fan the corner menus get -- see `radial::Geometry`.
+/// `monitor` is the output size in logical pixels; it sets the corner menus'
+/// fan radius -- see `radial::Geometry`.
 pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk::Widget {
     let banner = Banner::new();
 
@@ -116,9 +115,8 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk:
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&column));
 
-    // The scrim goes on FIRST so every fan sits above the dimming rather than
-    // under it. It dims the kiosk only: this is a BOTTOM-layer surface, so a
-    // window from another VM stays above it and stays bright.
+    // Scrim FIRST, so every fan sits above the dimming. It dims the kiosk only:
+    // on a BOTTOM-layer surface, another VM's window stays above and bright.
     let scrim = gtk::Box::new(gtk::Orientation::Vertical, 0);
     scrim.add_css_class("kiosk-scrim");
     scrim.set_can_target(false);
@@ -158,8 +156,8 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk:
         scrim.add_controller(click);
     }
 
-    // Escape closes it too. On the overlay rather than on a fan, because the key
-    // press arrives at whichever member has focus and bubbles up from there.
+    // Escape too. On the overlay, not a fan: the press arrives at whichever
+    // member has focus and bubbles up from there.
     {
         let fans = fans.clone();
         let keys = gtk::EventControllerKey::new();
@@ -177,9 +175,8 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk:
 
     // ── exit ────────────────────────────────────────────────────────────────
     //
-    // Only when no menu claimed it. Deliberately small and in the bottom-right
-    // corner: this is a maintenance affordance, not a normal part of the
-    // workflow, and it stays that way whichever place it ends up in.
+    // Only when no menu claimed it. Small and in the far corner: a maintenance
+    // affordance, not part of the workflow.
     if kiosk.exit.menu.is_none() {
         let exit = gtk::Button::new();
         exit.set_icon_name(&kiosk.exit.icon);
