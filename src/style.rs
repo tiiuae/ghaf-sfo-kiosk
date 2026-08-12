@@ -58,7 +58,17 @@ window.kiosk-root {
     border-color: #6b8299;
 }
 .kiosk-button:focus { border-color: #6ea8ff; }
-.kiosk-button-label { font-size: 22px; font-weight: bold; }
+/*
+ * `color` here is as load-bearing as `background-image` above, and for the
+ * mirror-image reason.
+ *
+ * Set it on the icon and the label too, not just the button: the theme styles
+ * those nodes as well, and inheriting from the button is only reliable where it
+ * does not.
+ */
+.kiosk-button { color: #f2f6fa; }
+.kiosk-button-label { font-size: 22px; font-weight: bold; color: #f2f6fa; }
+.kiosk-button-icon { color: #f2f6fa; }
 .kiosk-button-unconfigured { opacity: 0.45; }
 
 /* ── the radial menu ─────────────────────────────────────────────────────── */
@@ -168,3 +178,35 @@ window.kiosk-root {
 .kiosk-banner-info label { background-color: #1b3048; }
 .kiosk-banner-error label { background-color: #4a1f26; color: #ffd9dd; }
 ";
+
+/// Per-button icon colours, rendered as a stylesheet.
+///
+/// GTK4 CSS cannot read values from the program, so a colour that arrives in
+/// config has to become CSS text. These target the `kiosk-button-<id>` and
+/// `kiosk-radial-item-<id>` classes that ui.rs and radial.rs already attach, so
+/// nothing new has to be plumbed through the widget tree.
+///
+/// Values are validated as `#rrggbb` in config.rs before they reach this, which
+/// is what makes the interpolation safe.
+pub fn per_button_css(kiosk: &crate::config::Kiosk) -> String {
+    fn rule(out: &mut String, scope: &str, id: &str, colour: &str) {
+        out.push_str(&format!(
+            ".{scope}-{id} .{scope}-icon {{ color: {colour}; }}\n"
+        ));
+    }
+
+    let mut out = String::new();
+    for b in &kiosk.buttons {
+        if let Some(c) = &b.icon_color {
+            rule(&mut out, "kiosk-button", &b.id, c);
+        }
+    }
+    for menu in &kiosk.menus {
+        for item in &menu.items {
+            if let Some(c) = &item.icon_color {
+                rule(&mut out, "kiosk-radial-item", &item.id, c);
+            }
+        }
+    }
+    out
+}
