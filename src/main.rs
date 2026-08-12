@@ -140,6 +140,19 @@ fn main() -> std::process::ExitCode {
                 &provider,
                 gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
             );
+            // Added second and at the same priority, so it overrides the
+            // defaults above by order rather than by specificity. Empty when no
+            // button asks for a colour, which costs nothing.
+            let per_button = style::per_button_css(&kiosk);
+            if !per_button.is_empty() {
+                let overrides = gtk::CssProvider::new();
+                overrides.load_from_string(&per_button);
+                gtk::style_context_add_provider_for_display(
+                    &display,
+                    &overrides,
+                    gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+                );
+            }
         }
         outputs::manage(app, kiosk.clone());
     });

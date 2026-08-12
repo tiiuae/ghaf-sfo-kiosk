@@ -125,6 +125,14 @@ pub struct Button {
     pub description: Option<String>,
     #[serde(default)]
     pub icon: Option<String>,
+    /// Tint for this button's icon, as `#rrggbb`. Only meaningful for a
+    /// symbolic icon, which GTK recolours to the widget's `color`; a full-colour
+    /// icon or a file path ignores it.
+    ///
+    /// A product decision, so it arrives in config rather than living in
+    /// style.rs -- which also means changing it needs no rebuild of this binary.
+    #[serde(default)]
+    pub icon_color: Option<String>,
     /// Render this button in the named menu rather than the grid. The value is
     /// another button's `id`, whose action kind must be `menu`.
     ///
@@ -315,7 +323,19 @@ pub struct ResolvedButton {
     pub label: String,
     pub description: Option<String>,
     pub icon: Option<String>,
+    /// Validated `#rrggbb`, or None. Anything malformed was dropped at load with
+    /// a warning, so this is safe to paste into a stylesheet.
+    pub icon_color: Option<String>,
     pub action: Action,
+}
+
+/// `#rrggbb`, lowercase or upper, nothing else.
+///
+/// This value is interpolated into a stylesheet, so it is validated rather than
+/// trusted: a stray `}` would silently break every rule after it, and the symptom
+/// would be a differently-wrong colour somewhere else entirely.
+fn valid_hex_colour(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// A trigger and its buttons, in config order -- also their order on the arc,
@@ -367,6 +387,21 @@ pub fn load(path: &Path) -> Result<Kiosk> {
             if let Action::Unsupported { reason } = &action {
                 log::warn!("button {:?}: {}", b.id, reason);
             }
+            // Dropped, not fatal: a bad colour is a cosmetic mistake, and
+            // refusing to start over one would hide every working button behind
+            // it. Same call as one_bad_button_does_not_kill_the_others.
+            let icon_color = b.icon_color.as_ref().and_then(|c| {
+                if valid_hex_colour(c) {
+                    Some(c.clone())
+                } else {
+                    log::warn!(
+                        "button {:?}: ignoring icon_color {:?}, expected #rrggbb",
+                        b.id,
+                        c
+                    );
+                    None
+                }
+            });
             (
                 b.menu.clone(),
                 ResolvedButton {
@@ -374,6 +409,7 @@ pub fn load(path: &Path) -> Result<Kiosk> {
                     label: b.label.clone(),
                     description: b.description.clone(),
                     icon: b.icon.clone(),
+                    icon_color,
                     action,
                 },
             )
@@ -675,6 +711,91 @@ mod tests {
         assert_eq!(k.buttons.len(), 2, "both render");
         assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
         assert!(matches!(k.buttons[1].action, Action::Exec { .. }));
+    }
+
+    #[test]
+    fn an_icon_colour_survives_to_the_resolved_button() {
+        // r##: a colour literal contains `"#`, which would close an r#"..."# here.
+        let k = parse(
+            r##"{"version":1,"buttons":[
+                 {"id":"plan","label":"Plan","icon":"mark-location-symbolic",
+                  "icon_color":"#ff8a80","action":{"kind":"exec","argv":["true"]}}]}"##,
+        )
+        .unwrap();
+        assert_eq!(k.buttons[0].icon_color.as_deref(), Some("#ff8a80"));
+    }
+
+    #[test]
+    fn a_button_without_a_colour_is_still_fine() {
+        // The field is optional; every button predating it must keep working.
+        let k = parse(
+            r#"{"version":1,"buttons":[
+                 {"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}]}"#,
+        )
+        .unwrap();
+        assert!(k.buttons[0].icon_color.is_none());
+    }
+
+    #[test]
+    fn a_malformed_colour_is_dropped_rather_than_pasted_into_css() {
+        // The value is interpolated into a stylesheet, so anything that could
+        // close a rule early has to be refused. Cosmetic, so the button lives.
+        for bad in [
+            "red",
+            "#fff",
+            "#gggggg",
+            "#ff8a80; } * { color: red",
+            "",
+            "#ff8a8080",
+        ] {
+            let json = format!(
+                r#"{{"version":1,"buttons":[
+                     {{"id":"a","label":"A","icon_color":{},
+                       "action":{{"kind":"exec","argv":["true"]}}}}]}}"#,
+                serde_json::to_string(bad).unwrap()
+            );
+            let k = parse(&json).expect("a bad colour must not fail the whole file");
+            assert!(
+                k.buttons[0].icon_color.is_none(),
+                "expected {bad:?} to be rejected"
+            );
+            assert!(matches!(k.buttons[0].action, Action::Exec { .. }));
+        }
+    }
+
+    #[test]
+    fn only_buttons_that_ask_for_a_colour_produce_a_rule() {
+        let k = parse(
+            r##"{"version":1,"buttons":[
+                 {"id":"plan","label":"Plan","icon_color":"#ff8a80",
+                  "action":{"kind":"exec","argv":["true"]}},
+                 {"id":"launch","label":"Launch",
+                  "action":{"kind":"exec","argv":["true"]}}]}"##,
+        )
+        .unwrap();
+        let css = crate::style::per_button_css(&k);
+        assert_eq!(
+            css.trim(),
+            ".kiosk-button-plan .kiosk-button-icon { color: #ff8a80; }"
+        );
+    }
+
+    #[test]
+    fn a_menu_member_is_coloured_through_its_radial_class() {
+        // The grid and the arc are different widgets with different class
+        // prefixes; a colour must follow the button to whichever it lands on.
+        let k = parse(
+            r##"{"version":1,"buttons":[
+                 {"id":"gear","label":"Settings","action":{"kind":"menu"}},
+                 {"id":"power","label":"Power","menu":"gear","icon_color":"#ffc246",
+                  "action":{"kind":"exec","argv":["true"]}}]}"##,
+        )
+        .unwrap();
+        let css = crate::style::per_button_css(&k);
+        assert_eq!(
+            css.trim(),
+            ".kiosk-radial-item-power .kiosk-radial-item-icon { color: #ffc246; }"
+        );
     }
 
     #[test]
