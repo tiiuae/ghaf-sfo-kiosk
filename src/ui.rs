@@ -76,6 +76,9 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk:
         if let Some(icon) = &spec.icon {
             let image = icon_image(icon);
             image.set_pixel_size(88);
+            // Named so style.rs can colour it and so a per-button icon_color has
+            // a node to target. Mirrors kiosk-radial-item-icon.
+            image.add_css_class("kiosk-button-icon");
             content.append(&image);
         }
         let label = gtk::Label::new(Some(&spec.label));
