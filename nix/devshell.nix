@@ -33,6 +33,16 @@
           ++ lib.attrValues config.treefmt.build.programs;
         };
 
+        # devshell merges packagesFrom into $DEVSHELL_DIR without running
+        # stdenv's setup hooks, so nothing populates PKG_CONFIG_PATH and
+        # gtk4-sys' build script fails to find gtk4.pc.
+        env = [
+          {
+            name = "PKG_CONFIG_PATH";
+            prefix = "$DEVSHELL_DIR/lib/pkgconfig";
+          }
+        ];
+
         commands = [
           {
             name = "format-repo";
