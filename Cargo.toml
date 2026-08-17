@@ -4,7 +4,11 @@
 name = "ghaf-sfo-kiosk"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.85"
+# The floor the dependency tree imposes, not the toolchain we happen to build
+# with: the gtk4 0.11 stack declares 1.92, and nothing in the locked graph
+# declares more. `cargo upgrade` filters candidate releases by this field, so
+# letting it go stale silently caps every dependency -- see nix/update-deps.nix.
+rust-version = "1.92"
 license = "Apache-2.0"
 description = "A config-driven kiosk shell for Ghaf-based SFO laptops"
 publish = false

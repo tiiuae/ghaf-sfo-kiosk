@@ -62,6 +62,11 @@
             help = "Run the full PR gate, exactly as CI does";
             category = "linters";
           }
+          {
+            package = config.packages.update-deps;
+            help = "Update Cargo.lock and flake.lock (--upgrade also bumps Cargo.toml)";
+            category = "maintenance";
+          }
         ];
       };
     };

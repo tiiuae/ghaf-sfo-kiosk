@@ -70,6 +70,33 @@ nix build .#ghaf-sfo-kiosk        # unit tests run in the check phase
 nix flake check                   # + clippy (deny warnings) and rustfmt
 ```
 
+## Updating dependencies
+
+Dependabot opens the weekly cargo and GitHub Actions bumps, but it has no Nix flake ecosystem, so
+`flake.lock` has no robot behind it. `update-deps` is the one command that moves both:
+
+```bash
+nix run .#update-deps              # Cargo.lock + flake.lock; requirements untouched
+nix run .#update-deps -- --upgrade # + raise the requirements in Cargo.toml
+```
+
+It is on `$PATH` in `nix develop` as `update-deps`, and mirrors the tool of the same name in
+[ghafpkgs](https://github.com/tiiuae/ghafpkgs).
+
+The flake moves first because the pin is the platform: it decides which rustc and which gtk4 /
+gtk4-layer-shell C libraries the crates get built against, so the `nix flake check` at the end
+measures the combination you are about to commit.
+
+Without `--upgrade` nothing in `Cargo.toml` or `flake.nix` changes — only the two lock files move,
+within the constraints already written down. `--upgrade` additionally runs
+`cargo upgrade --incompatible`, which crosses semver majors and can break the build; review the diff
+and run `nix flake check --all-systems --keep-going -L` before committing either.
+
+One thing to know about `--upgrade`: `cargo upgrade` obeys `rust-version` in `Cargo.toml`, so a
+stale MSRV there silently holds every dependency back to whatever that release supported.
+`cargo update` has no such rule (edition 2021 resolves with v2), which is why the plain mode can
+lock a crate the upgrade mode then refuses to raise.
+
 ## Running it without a device
 
 The compositor has a built-in kiosk mode — `cosmic-comp <program>` runs the program as its only

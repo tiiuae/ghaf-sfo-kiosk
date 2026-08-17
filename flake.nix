@@ -43,6 +43,10 @@
         {
           packages.ghaf-sfo-kiosk = pkgs.callPackage ./nix/package.nix { };
           packages.default = pkgs.callPackage ./nix/package.nix { };
+
+          # Deliberately not in the overlay above: a maintenance tool for this
+          # checkout, not something a consumer's nixpkgs should grow.
+          packages.update-deps = pkgs.callPackage ./nix/update-deps.nix { };
         };
     };
 }
