@@ -165,6 +165,54 @@ ghaf's app-VM wiring never sets. This is why ghaf smuggles flatpak app ids throu
 `http://<app-id>`; the receiving script strips the scheme. Prefer passing nothing at all and baking
 policy into the target VM.
 
+#### `await_completion` — for a job that ends
+
+```json
+{
+  "kind": "givc-app",
+  "vm": "flatpak-vm",
+  "app": "sfo-update-apps",
+  "await_completion": true,
+  "…": "…"
+}
+```
+
+`givc-cli start app` returns as soon as the unit is **queued**, not once it finishes — without this,
+a button that runs a job (an installer, a cleanup) reports success while the work is still running.
+Turn it on only for a button whose unit is expected to exit on its own; a launcher whose window stays
+open indefinitely must never set it, or the kiosk waits fifteen minutes and then gives up, on every
+press. Mutually exclusive with `single_instance`: one is for a job that ends, the other for one that
+does not.
+
+#### `single_instance` — for a launcher, so a repeat press does not stack a second window
+
+```json
+{
+  "kind": "givc-app",
+  "vm": "flatpak-vm",
+  "app": "run-flatpak-app",
+  "single_instance": true,
+  "window_app_id": "BARQ Ground Control Station",
+  "…": "…"
+}
+```
+
+On a repeat press, the kiosk asks the compositor directly whether a window with this exact
+`window_app_id` already exists — if so, it raises that window instead of starting a second copy.
+Deliberately **not** a GIVC query: `run-flatpak-app@N` unit numbers are reused slots, not stable
+identities, so asking GIVC "is this app still running" is unsound — closing one launcher and opening
+a different one can hand the second the first's old number.
+
+`window_app_id` is **required** whenever `single_instance` is set, and matched exactly, not as a
+substring. It is not derivable from `app` or `args` — a flatpak's Wayland `app_id` is set by its own
+toolkit and is routinely unrelated to its GIVC name. Find it by running the application and reading
+back what the compositor reports for its window, e.g. with a client that binds
+`ext_foreign_toplevel_list_v1` and reads each toplevel's `app_id` event; Barq's, for instance, is
+`"BARQ Ground Control Station"`, not `"org.barq.Barq"`. If the application ever changes its own
+`app_id` — an update to its toolkit or its own window title logic — this value goes stale silently:
+nothing in this repo or in `ghaf-sfo-laptop`'s build-time checks can catch it, because there is no
+source of truth to check against.
+
 ### `menu` — a corner trigger, not a command
 
 ```json

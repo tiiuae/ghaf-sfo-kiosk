@@ -14,7 +14,8 @@
 use gtk::gio;
 use gtk::glib;
 
-use crate::config::{Action, AwaitJob};
+use crate::config::{Action, AwaitJob, SingleInstance};
+use crate::toplevels::{self, Activation};
 
 /// How often to ask whether the job is still registered.
 const POLL_SECONDS: u32 = 2;
@@ -36,6 +37,12 @@ pub trait Reporter: 'static {
 /// windows was the report that prompted this. Cleared when the child exits, or
 /// for an awaited GIVC action when the job leaves the registry, so a second
 /// press cannot re-queue an install that is still running.
+///
+/// For a `single_instance` button this also covers the compositor check
+/// itself: that check is asynchronous too (a background thread, see
+/// `toplevels::check_and_activate_async`), and without `busy` a rapid double
+/// press could start two checks that both conclude "not open yet" and launch
+/// twice.
 #[derive(Clone, Default)]
 pub struct Busy(std::rc::Rc<std::cell::Cell<bool>>);
 
@@ -51,67 +58,50 @@ impl Busy {
     }
 }
 
-/// Run `action`, reporting progress and outcome through `reporter`.
-pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R, busy: &Busy) {
-    let mut await_job: Option<AwaitJob> = None;
-    let argv: Vec<String> = match action {
-        Action::Exec { argv } => argv.clone(),
-        Action::Givc {
-            argv,
-            target,
-            await_job: job,
-        } => {
-            log::info!("button {label:?} targets {target}");
-            await_job = job.clone();
-            argv.clone()
-        }
-        // The fan handles a trigger's presses, so reaching here means it was
-        // rendered in the grid -- which config::partition never does. Log rather
-        // than panic; the operator keeps a working kiosk.
-        Action::Menu => {
-            log::warn!("button {label:?} is a menu trigger but was pressed as an ordinary button");
-            return;
-        }
-        Action::Unsupported { reason } => {
-            // Not an error to shout about — it is a configuration problem the
-            // operator can do nothing about. Say precisely what is wrong so
-            // whoever reads the photo of the screen knows where to look.
-            log::warn!("button {label:?} pressed but not configured: {reason}");
-            reporter.error(&format!("{label} is not configured: {reason}"));
-            return;
-        }
-    };
-
-    // A press while the last run is still going is a press the operator has
-    // already made. Say so rather than stacking another copy.
-    if busy.get() {
-        log::info!("button {label:?} pressed while its previous run is still going; ignoring");
-        reporter.info(&format!("{label} is already open"));
-        return;
-    }
-
-    log::info!("button {:?}: exec {:?}", label, argv);
-    reporter.info(&format!("Starting {label}…"));
-
+/// Spawn `argv`, reporting a spawn failure through `reporter` and returning
+/// `None`. Shared by every path that ends in actually starting something.
+fn spawn_or_report<R: Reporter>(
+    argv: &[String],
+    label: &str,
+    reporter: &R,
+) -> Option<gio::Subprocess> {
     let refs: Vec<&std::ffi::OsStr> = argv.iter().map(std::ffi::OsStr::new).collect();
-    // NONE: inherit stdout and stderr, so the child's own diagnostics go to the
-    // journal rather than into a buffer only we can see.
-    let proc = match gio::Subprocess::newv(&refs, gio::SubprocessFlags::NONE) {
-        Ok(p) => p,
+    // NONE: inherit stdout and stderr, so the child's own diagnostics go to
+    // the journal rather than into a buffer only we can see.
+    match gio::Subprocess::newv(&refs, gio::SubprocessFlags::NONE) {
+        Ok(p) => Some(p),
         Err(e) => {
             // Almost always "no such file": a store path that did not make it
             // into the VM, or a typo in the nix module.
             log::error!("button {label:?}: spawn failed: {e}; argv was {argv:?}");
             reporter.error(&format!("{label} could not start: {e}"));
-            return;
+            None
         }
-    };
+    }
+}
 
+/// Spawn `argv` and track it through to completion: clears `busy` when the
+/// child exits (after `await_job` finishes watching, if there is one), and on
+/// spawn failure too, so a failed launch never leaves a button wedged.
+///
+/// Shared by the plain launch path and by a `single_instance` button once its
+/// compositor check has concluded there is nothing to raise.
+fn spawn_and_track<R: Reporter + Clone>(
+    argv: Vec<String>,
+    label: String,
+    reporter: R,
+    busy: Busy,
+    await_job: Option<AwaitJob>,
+) {
+    log::info!("button {label:?}: exec {argv:?}");
+    reporter.info(&format!("Starting {label}…"));
+
+    let Some(proc) = spawn_or_report(&argv, &label, &reporter) else {
+        busy.set(false);
+        return;
+    };
     busy.set(true);
 
-    let reporter = reporter.clone();
-    let label = label.to_owned();
-    let busy = busy.clone();
     proc.wait_check_async(gio::Cancellable::NONE, move |result| match result {
         Ok(()) => {
             // Either it did its job and exited, or the operator closed the
@@ -133,6 +123,164 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R,
             let brief: String = msg.chars().take(160).collect();
             reporter.error(&format!("{label} failed: {brief}"));
             // A failed run must not leave the button wedged.
+            busy.set(false);
+        }
+    });
+}
+
+/// Run `action`, reporting progress and outcome through `reporter`.
+pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R, busy: &Busy) {
+    let mut await_job: Option<AwaitJob> = None;
+    let mut single_instance: Option<SingleInstance> = None;
+    let argv: Vec<String> = match action {
+        Action::Exec { argv } => argv.clone(),
+        Action::Givc {
+            argv,
+            target,
+            await_job: job,
+            single_instance: si,
+        } => {
+            log::info!("button {label:?} targets {target}");
+            await_job = job.clone();
+            single_instance = si.clone();
+            argv.clone()
+        }
+        // The fan handles a trigger's presses, so reaching here means it was
+        // rendered in the grid -- which config::partition never does. Log rather
+        // than panic; the operator keeps a working kiosk.
+        Action::Menu => {
+            log::warn!("button {label:?} is a menu trigger but was pressed as an ordinary button");
+            return;
+        }
+        Action::Unsupported { reason } => {
+            // Not an error to shout about — it is a configuration problem the
+            // operator can do nothing about. Say precisely what is wrong so
+            // whoever reads the photo of the screen knows where to look.
+            log::warn!("button {label:?} pressed but not configured: {reason}");
+            reporter.error(&format!("{label} is not configured: {reason}"));
+            return;
+        }
+    };
+
+    // A press while the last run -- or the last compositor check, below -- is
+    // still going is a press the operator has already made.
+    if busy.get() {
+        log::info!("button {label:?} pressed while its previous run is still going; ignoring");
+        reporter.info(&format!("{label} is already open"));
+        return;
+    }
+
+    if let Some(si) = single_instance {
+        bring_to_front_or_launch(si, argv, label.to_owned(), reporter.clone(), busy.clone());
+        return;
+    }
+
+    spawn_and_track(
+        argv,
+        label.to_owned(),
+        reporter.clone(),
+        busy.clone(),
+        await_job,
+    );
+}
+
+/// A `single_instance` launcher's press: ask cosmic-comp directly whether its
+/// window already exists, and either raise it or launch fresh -- never both.
+///
+/// GIVC cannot answer "is this app's window open": its `run-flatpak-app@N`
+/// unit numbers are reused slots, not identities, so a launcher whose number
+/// happens to have been recycled from a *different*, since-closed launcher
+/// would otherwise be reported as already running. Asking the compositor
+/// sidesteps that entirely -- it is the one thing that actually knows what is
+/// on screen, keyed on `window_app_id` rather than a unit number.
+///
+/// Runs the check on a background thread (see
+/// `toplevels::check_and_activate_async`) so a slow or unreachable
+/// compositor cannot freeze the kiosk; `busy` covers the gap.
+fn bring_to_front_or_launch<R: Reporter + Clone>(
+    si: SingleInstance,
+    argv: Vec<String>,
+    label: String,
+    reporter: R,
+    busy: Busy,
+) {
+    busy.set(true);
+    let app_id = si.window_app_id;
+    toplevels::check_and_activate_async(app_id.clone(), move |result| {
+        if should_launch(&result) {
+            if let Activation::Unavailable(reason) = &result {
+                // Fails open: one compositor call failing must not
+                // permanently refuse to launch this button. The cost is a
+                // possible duplicate window, same trade-off the rest of
+                // this module makes elsewhere.
+                log::warn!(
+                    "button {label:?}: could not check for an existing window ({reason}); \
+                     launching anyway"
+                );
+            } else {
+                log::info!("button {label:?}: no matching window; launching");
+            }
+            launch_singleton(argv, label, reporter, busy, app_id);
+        } else {
+            log::info!("button {label:?}: brought its window to the front");
+            busy.set(false);
+        }
+    });
+}
+
+/// Whether `bring_to_front_or_launch` should launch after this `Activation`.
+/// Pulled out on its own because it is the one piece of that function with a
+/// meaningful branch to get wrong, and unlike the rest -- which needs a live
+/// compositor -- this needs nothing but the enum.
+fn should_launch(result: &Activation) -> bool {
+    !matches!(result, Activation::Activated)
+}
+
+/// A `single_instance` launcher's actual launch, once the compositor check
+/// found nothing to raise. Keeps `busy` set until the window it just started
+/// actually appears (or a grace period elapses) -- not merely until
+/// `givc-cli` exits, which only means the unit was queued in flatpak-vm, well
+/// before its surface is forwarded and mapped. Clearing `busy` at that
+/// earlier point reopens the exact bug `single_instance` exists to close: a
+/// second press in the gap sees no window either, via the same check, and
+/// starts a second copy -- reachable in the few seconds right after every
+/// single press, which is exactly when an operator is likely to press again
+/// because nothing is on screen yet.
+fn launch_singleton<R: Reporter + Clone>(
+    argv: Vec<String>,
+    label: String,
+    reporter: R,
+    busy: Busy,
+    app_id: String,
+) {
+    log::info!("button {label:?}: exec {argv:?}");
+    reporter.info(&format!("Starting {label}…"));
+
+    let Some(proc) = spawn_or_report(&argv, &label, &reporter) else {
+        busy.set(false);
+        return;
+    };
+
+    proc.wait_check_async(gio::Cancellable::NONE, move |result| match result {
+        Ok(()) => {
+            log::info!("button {label:?}: child queued; waiting for its window");
+            toplevels::wait_for_window_async(app_id, move |appeared| {
+                if appeared {
+                    log::info!("button {label:?}: window appeared");
+                } else {
+                    log::warn!(
+                        "button {label:?}: no window appeared within the grace period; \
+                         unlocking anyway"
+                    );
+                }
+                busy.set(false);
+            });
+        }
+        Err(e) => {
+            log::error!("button {label:?}: {e}");
+            let msg = e.to_string();
+            let brief: String = msg.chars().take(160).collect();
+            reporter.error(&format!("{label} failed: {brief}"));
             busy.set(false);
         }
     });
@@ -200,4 +348,26 @@ fn still_running(job: &AwaitJob) -> Option<bool> {
             .any(|v| v.contains(&job.app))
     });
     Some(listed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{should_launch, Activation};
+
+    #[test]
+    fn a_window_already_on_screen_is_not_launched_again() {
+        assert!(!should_launch(&Activation::Activated));
+    }
+
+    #[test]
+    fn no_matching_window_is_launched() {
+        assert!(should_launch(&Activation::NotFound));
+    }
+
+    #[test]
+    fn an_unreachable_compositor_fails_open_into_launching() {
+        assert!(should_launch(&Activation::Unavailable(
+            "no Wayland connection".to_owned()
+        )));
+    }
 }

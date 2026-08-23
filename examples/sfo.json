@@ -34,6 +34,8 @@
         "vm": "flatpak-vm",
         "app": "run-flatpak-app",
         "args": ["http://org.example.Launch"],
+        "single_instance": true,
+        "window_app_id": "Example Launcher Window",
         "givc_cli": [
           "/run/current-system/sw/bin/givc-cli",
           "--name",

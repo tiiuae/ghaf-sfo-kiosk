@@ -32,6 +32,10 @@ rustPlatform.buildRustPackage (
         ../Cargo.lock
         ../src
         ../examples # included on purpose: a unit test asserts it parses
+        # The two COSMIC Wayland protocol extensions toplevels.rs binds,
+        # generated from these at compile time -- see src/protocols.rs for
+        # why this is vendored XML rather than a git dependency.
+        ../protocols
       ];
     };
 

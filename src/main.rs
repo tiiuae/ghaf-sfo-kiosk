@@ -11,11 +11,13 @@ mod actions;
 mod banner;
 mod config;
 mod outputs;
+mod protocols;
 mod radial;
 mod shared;
 mod status;
 mod style;
 mod surface;
+mod toplevels;
 mod ui;
 
 use clap::Parser;
