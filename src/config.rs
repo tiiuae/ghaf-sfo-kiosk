@@ -141,6 +141,27 @@ pub struct RawAction {
     /// the default.
     #[serde(default)]
     pub await_completion: bool,
+    /// This button launches something that stays open indefinitely. A repeat
+    /// press asks cosmic-comp directly whether a toplevel with `window_app_id`
+    /// already exists rather than starting a second one -- see that field.
+    /// GIVC cannot answer this itself: it only ever tracks a launch as a
+    /// generic, numbered `run-flatpak-app@N` unit, and that number is a
+    /// reused slot, not an identity -- closing one app and opening another can
+    /// hand the second the first's old number. Mutually exclusive with
+    /// `await_completion`: one is for a job that ends, the other for one that
+    /// does not.
+    #[serde(default)]
+    pub single_instance: bool,
+    /// This launcher's actual Wayland `app_id`, exactly as cosmic-comp
+    /// reports it -- required whenever `single_instance` is set, since it is
+    /// the only thing that answers "is this app's window already open".
+    /// Not derivable from `app` or `args`: a flatpak's Wayland `app_id` is set
+    /// by its own toolkit and is routinely unrelated to its GIVC/flatpak
+    /// name -- Barq's, for instance, is "BARQ Ground Control Station", not
+    /// "org.barq.Barq". Matched exactly, not as a substring: "Plan" must not
+    /// raise "Mission Planner".
+    #[serde(default)]
+    pub window_app_id: Option<String>,
 }
 
 /// How to tell that a GIVC job has finished. Absent for a launcher button.
@@ -155,6 +176,20 @@ pub struct AwaitJob {
     pub query_argv: Vec<String>,
     /// Registry entries are matched against this.
     pub app: String,
+}
+
+/// How to ask whether a previously-launched singleton is still running.
+///
+/// No GIVC query here at all, unlike `AwaitJob`: GIVC's `run-flatpak-app@N`
+/// unit numbers are reused slots, not identities, so asking it "is `app`
+/// running" cannot be answered soundly for this case -- see
+/// `RawAction::single_instance`. The compositor is asked directly instead,
+/// at press time, in `actions::bring_to_front_or_launch`.
+#[derive(Debug, Clone)]
+pub struct SingleInstance {
+    /// See `RawAction::window_app_id`. Required: without it there is nothing
+    /// to ask the compositor.
+    pub window_app_id: String,
 }
 
 #[derive(Debug, Clone)]
@@ -177,6 +212,10 @@ pub enum Action {
         argv: Vec<String>,
         target: String,
         await_job: Option<AwaitJob>,
+        /// Set only for a launcher whose repeat presses must not stack a
+        /// second window. Mutually exclusive with `await_job` by construction
+        /// -- see `single_instance` on `RawAction`.
+        single_instance: Option<SingleInstance>,
     },
     /// Not a command: a menu trigger. Renders in a screen corner and fans the
     /// buttons naming it out along an arc.
@@ -228,6 +267,35 @@ impl Action {
                         reason: "action kind \"givc-app\" has an empty \"givc_cli\"".to_owned(),
                     };
                 }
+                // One is for a job that ends, the other for one that does not;
+                // a button cannot be both.
+                if raw.await_completion && raw.single_instance {
+                    return Self::Unsupported {
+                        reason: "action kind \"givc-app\" cannot set both \"await_completion\" \
+                                 and \"single_instance\""
+                            .to_owned(),
+                    };
+                }
+                // Without it there is nothing to ask the compositor -- see
+                // SingleInstance's own doc comment. Matched here, not
+                // unwrapped in a helper elsewhere: every other malformed
+                // config in this file degrades to Unsupported rather than
+                // panicking, and a `window_app_id` obtained any way other
+                // than this match arm proving it Some would be one too.
+                let single_instance = match (raw.single_instance, raw.window_app_id.as_ref()) {
+                    (true, Some(window_app_id)) => Some(SingleInstance {
+                        window_app_id: window_app_id.clone(),
+                    }),
+                    (true, None) => {
+                        return Self::Unsupported {
+                            reason: "action kind \"givc-app\" sets \"single_instance\" without \
+                                     \"window_app_id\", which is required to tell whether the \
+                                     window is already open"
+                                .to_owned(),
+                        };
+                    }
+                    (false, _) => None,
+                };
                 let mut argv = raw.givc_cli.clone();
                 argv.extend(["start".to_owned(), "app".to_owned()]);
                 argv.extend(["--vm".to_owned(), vm.clone()]);
@@ -240,6 +308,7 @@ impl Action {
                     argv,
                     target: format!("{app} in {vm}"),
                     await_job: await_job_for(raw, app),
+                    single_instance,
                 }
             }
             // A systemd user unit exposed through givc.appvm.capabilities.services.
@@ -263,6 +332,14 @@ impl Action {
                         reason: "action kind \"givc-service\" takes no args".to_owned(),
                     };
                 }
+                // A service has no window to avoid duplicating; that concept
+                // only applies to a launcher.
+                if raw.single_instance {
+                    return Self::Unsupported {
+                        reason: "action kind \"givc-service\" does not support \"single_instance\""
+                            .to_owned(),
+                    };
+                }
                 let mut argv = raw.givc_cli.clone();
                 argv.extend(["start".to_owned(), "service".to_owned()]);
                 argv.extend(["--vm".to_owned(), vm.clone()]);
@@ -271,6 +348,7 @@ impl Action {
                     argv,
                     target: format!("{unit} in {vm}"),
                     await_job: await_job_for(raw, unit),
+                    single_instance: None,
                 }
             }
             // Permissive about the other fields: the nix module already asserts
@@ -962,5 +1040,86 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(k.buttons[0].action, Action::Exec { .. }));
+    }
+
+    #[test]
+    fn a_button_is_not_a_singleton_unless_it_says_so() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"l","label":"L","action":{
+                 "kind":"givc-app","vm":"flatpak-vm","app":"run-flatpak-app",
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
+        )
+        .unwrap();
+        let Action::Givc {
+            single_instance, ..
+        } = &k.buttons[0].action
+        else {
+            panic!("expected a givc action");
+        };
+        assert!(
+            single_instance.is_none(),
+            "a button with no single_instance must not be tracked as one"
+        );
+    }
+
+    /// Without it there is nothing to ask the compositor -- see
+    /// SingleInstance's own doc comment.
+    #[test]
+    fn a_singleton_without_window_app_id_is_unsupported() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"l","label":"L","action":{
+                 "kind":"givc-app","vm":"flatpak-vm","app":"run-flatpak-app",
+                 "single_instance":true,
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli","--name","admin-vm"]}}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+    }
+
+    #[test]
+    fn a_launcher_cannot_be_both_awaited_and_a_singleton() {
+        // One is for a job that ends, the other for one that does not.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"l","label":"L","action":{
+                 "kind":"givc-app","vm":"flatpak-vm","app":"run-flatpak-app",
+                 "await_completion":true,"single_instance":true,
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+    }
+
+    #[test]
+    fn window_app_id_survives_to_the_resolved_action() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"l","label":"L","action":{
+                 "kind":"givc-app","vm":"flatpak-vm","app":"run-flatpak-app",
+                 "single_instance":true,"window_app_id":"BARQ Ground Control Station",
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
+        )
+        .unwrap();
+        let Action::Givc {
+            single_instance, ..
+        } = &k.buttons[0].action
+        else {
+            panic!("expected a givc action");
+        };
+        assert_eq!(
+            single_instance.as_ref().unwrap().window_app_id,
+            "BARQ Ground Control Station"
+        );
+    }
+
+    #[test]
+    fn a_service_does_not_support_single_instance() {
+        // A service has no window to avoid duplicating; only a launcher does.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"c","label":"C","action":{
+                 "kind":"givc-service","vm":"flatpak-vm","app":"sfo-clear.service",
+                 "single_instance":true,
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
     }
 }

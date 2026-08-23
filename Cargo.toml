@@ -22,6 +22,13 @@ gtk4-layer-shell = { version = "0.8", features = ["v1_3"] }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Not unused despite nothing in src/ naming it directly:
+# generate_interfaces! (see src/protocols.rs) emits absolute
+# wayland_backend::protocol::wl_interface paths.
+wayland-backend = "0.3"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["staging", "client"] }
+wayland-scanner = "0.31"
 
 [[bin]]
 name = "ghaf-sfo-kiosk"
