@@ -21,6 +21,10 @@ pub struct Config {
     pub version: u32,
     #[serde(default = "default_title")]
     pub title: String,
+    /// Shown at the left of the status bar instead of `title`. Absolute path or
+    /// icon name, same rule as a button's `icon`.
+    #[serde(default)]
+    pub logo: Option<String>,
     #[serde(default)]
     pub status_bar: StatusBar,
     #[serde(default)]
@@ -313,6 +317,7 @@ pub struct Menu {
 
 pub struct Kiosk {
     pub title: String,
+    pub logo: Option<String>,
     pub status_bar: StatusBar,
     pub layout: Layout,
     /// Grid buttons: everything that is not a trigger and not in a menu.
@@ -395,6 +400,7 @@ pub fn load(path: &Path) -> Result<Kiosk> {
 
     Ok(Kiosk {
         title: cfg.title,
+        logo: cfg.logo,
         status_bar: cfg.status_bar,
         layout: cfg.layout,
         buttons,
@@ -610,6 +616,25 @@ mod tests {
         .unwrap();
         assert!(k.menus.is_empty(), "a member-less trigger is not rendered");
         assert_eq!(k.buttons.len(), 1, "the trigger is not demoted to the grid");
+    }
+
+    /// A logo replaces the title text; absent means the text is kept.
+    #[test]
+    fn a_logo_is_optional_and_survives_to_the_kiosk() {
+        let with = parse(
+            r#"{"version":1,"title":"SFO","logo":"/nix/store/x/ghaf-logo-512px.png",
+                "buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(with.logo.as_deref(), Some("/nix/store/x/ghaf-logo-512px.png"));
+        assert_eq!(with.title, "SFO", "the title is kept as the tooltip");
+
+        let without = parse(
+            r#"{"version":1,"title":"SFO",
+                "buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(without.logo, None);
     }
 
     /// A stale `exit` object is an unknown field, and unknown fields are

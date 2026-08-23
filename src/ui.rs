@@ -22,6 +22,10 @@ use crate::status;
 /// A leading `/` selects a file; anything else is an icon theme name.
 ///
 /// Shared with radial.rs so grid and menu resolve icons by the same rule.
+/// Status bar text is 15px with 10px padding; this keeps the logo inside that
+/// band rather than growing the bar.
+const LOGO_PIXEL_SIZE: i32 = 24;
+
 pub fn icon_image(icon: &str) -> gtk::Image {
     if icon.starts_with('/') {
         gtk::Image::from_file(icon)
@@ -51,9 +55,19 @@ pub fn build(
     let bar = gtk::CenterBox::new();
     bar.add_css_class("kiosk-statusbar");
 
-    let title = gtk::Label::new(Some(&kiosk.title));
-    title.add_css_class("kiosk-title");
-    bar.set_start_widget(Some(&title));
+    // A logo replaces the title text outright. Same path-or-icon-name rule as a
+    // button's icon, so a store path from the nix side just works.
+    if let Some(logo) = &kiosk.logo {
+        let image = icon_image(logo);
+        image.set_pixel_size(LOGO_PIXEL_SIZE);
+        image.add_css_class("kiosk-logo");
+        image.set_tooltip_text(Some(&kiosk.title));
+        bar.set_start_widget(Some(&image));
+    } else {
+        let title = gtk::Label::new(Some(&kiosk.title));
+        title.add_css_class("kiosk-title");
+        bar.set_start_widget(Some(&title));
+    }
 
     let clock = std::rc::Rc::new(status::Clock::new(&kiosk.status_bar.clock_format));
     bar.set_center_widget(Some(&clock.label));

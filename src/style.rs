@@ -21,6 +21,8 @@ window.kiosk-root {
     font-size: 15px;
 }
 .kiosk-title { font-weight: bold; letter-spacing: 2px; }
+/* Logo replaces the title; the margin keeps it off the bar's left padding. */
+.kiosk-logo { margin-right: 4px; }
 .kiosk-clock { font-size: 17px; font-weight: bold; }
 
 /*
