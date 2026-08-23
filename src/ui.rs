@@ -34,8 +34,19 @@ pub fn icon_image(icon: &str) -> gtk::Image {
 ///
 /// `monitor` is the output size in logical pixels; it sets the corner menus'
 /// fan radius -- see `radial::Geometry`.
-pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk::Widget {
+pub fn build(
+    kiosk: &Kiosk,
+    app: &gtk::Application,
+    monitor: (f64, f64),
+    shared: &crate::shared::Shared,
+) -> gtk::Widget {
+    // This output's own banner widget, registered so a message raised anywhere
+    // is shown on every output. `reporter` -- NOT `banner` -- is what buttons
+    // and menu items must report through; using the local banner directly is
+    // exactly the bug this indirection exists to prevent.
     let banner = Banner::new();
+    shared.register_banner(banner.clone());
+    let reporter = shared.reporter();
 
     // ── status bar ──────────────────────────────────────────────────────────
     let bar = gtk::CenterBox::new();
@@ -102,7 +113,7 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk:
 
         let action = spec.action.clone();
         let name = spec.label.clone();
-        let reporter = banner.clone();
+        let reporter = reporter.clone();
         // Per button, so a slow one cannot block a different one.
         let busy = actions::Busy::new();
         button.connect_clicked(move |_| actions::dispatch(&action, &name, &reporter, &busy));
@@ -139,10 +150,13 @@ pub fn build(kiosk: &Kiosk, app: &gtk::Application, monitor: (f64, f64)) -> gtk:
                 takes_exit.then_some(&kiosk.exit),
                 monitor,
                 app,
-                &banner,
+                &reporter,
                 &scrim_widget,
             );
             overlay.add_overlay(&fan.widget);
+            // Link this menu to the SAME menu on every other output, so opening
+            // the fan on the laptop opens it on the room's screen too.
+            shared.register_fan(&menu.trigger.id, &fan);
             fan
         })
         .collect();

@@ -15,6 +15,9 @@ use crate::config::Kiosk;
 
 /// Create surfaces for the current outputs and keep them in step with hotplug.
 pub fn manage(app: &gtk::Application, kiosk: Rc<Kiosk>) {
+    // One set of shared state for the whole run: every surface registers into
+    // it, so all outputs show the same menu state and the same banners.
+    let shared = crate::shared::Shared::new();
     let Some(display) = gtk::gdk::Display::default() else {
         log::error!("no GDK display; cannot create a surface");
         return;
@@ -26,14 +29,15 @@ pub fn manage(app: &gtk::Application, kiosk: Rc<Kiosk>) {
         Rc::new(RefCell::new(Vec::new()));
 
     let monitors = display.monitors();
-    reconcile(app, &kiosk, &monitors, &windows);
+    reconcile(app, &kiosk, &monitors, &windows, &shared);
 
     let app2 = app.clone();
     let windows2 = windows.clone();
     let kiosk2 = kiosk.clone();
+    let shared2 = shared.clone();
     monitors.connect_items_changed(move |model, _pos, _removed, _added| {
         log::info!("output set changed; reconciling kiosk surfaces");
-        reconcile(&app2, &kiosk2, model, &windows2);
+        reconcile(&app2, &kiosk2, model, &windows2, &shared2);
     });
 }
 
@@ -42,6 +46,7 @@ fn reconcile(
     kiosk: &Rc<Kiosk>,
     model: &gtk::gio::ListModel,
     windows: &Rc<RefCell<Vec<(gtk::gdk::Monitor, gtk::ApplicationWindow)>>>,
+    shared: &crate::shared::Shared,
 ) {
     let mut live: Vec<gtk::gdk::Monitor> = Vec::new();
     for i in 0..model.n_items() {
@@ -62,6 +67,10 @@ fn reconcile(
         still_there
     });
 
+    // Registrations for the surfaces just destroyed must go before new ones are
+    // made, or a replug leaves dead widgets in the shared lists.
+    shared.prune();
+
     // Add surfaces for new outputs.
     for monitor in live {
         if held.iter().any(|(m, _)| *m == monitor) {
@@ -78,6 +87,7 @@ fn reconcile(
             kiosk,
             app,
             (f64::from(size.width()), f64::from(size.height())),
+            shared,
         );
         let window = crate::surface::build(app, &monitor, &content);
         window.present();

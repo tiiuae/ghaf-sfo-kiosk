@@ -12,6 +12,7 @@ mod banner;
 mod config;
 mod outputs;
 mod radial;
+mod shared;
 mod status;
 mod style;
 mod surface;

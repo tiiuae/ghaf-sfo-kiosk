@@ -17,7 +17,7 @@ use gtk::glib;
 use gtk::prelude::*;
 
 use crate::actions;
-use crate::banner::Banner;
+use crate::actions::Reporter;
 use crate::config::{Action, ExitButton, Menu};
 
 // ── Geometry ────────────────────────────────────────────────────────────────
@@ -171,6 +171,7 @@ fn radius_for(monitor: (f64, f64), angles: &[f64]) -> f64 {
 const DURATION_MS: f64 = 220.0;
 const STAGGER_MS: f64 = 40.0;
 
+#[derive(Clone)]
 pub struct Fan {
     /// Add this to the overlay ABOVE the scrim.
     pub widget: gtk::Fixed,
@@ -187,19 +188,41 @@ impl Fan {
     pub fn is_open(&self) -> bool {
         self.trigger.is_active()
     }
+
+    /// Open or close explicitly. Used to keep the same menu in step across
+    /// outputs -- see shared.rs.
+    pub fn set_open(&self, open: bool) {
+        self.trigger.set_active(open);
+    }
+
+    /// Notified whenever this fan opens or closes, however it was driven.
+    /// Everything routes through the trigger, so this sees every path.
+    pub fn connect_toggled<F: Fn(bool) + 'static>(&self, f: F) {
+        self.trigger
+            .connect_toggled(move |t| f(t.is_active()));
+    }
+
+    /// Whether two handles are the same fan, so a broadcast can skip its
+    /// originator. Compares the underlying GTK object, not the wrapper.
+    pub fn same_as(&self, other: &Fan) -> bool {
+        self.trigger == other.trigger
+    }
 }
 
 /// Build one menu's corner trigger and its arc.
 ///
 /// `exit` is `Some` only when the config put the exit button in *this* menu.
-pub fn build(
+pub fn build<R>(
     menu: &Menu,
     exit: Option<&ExitButton>,
     monitor: (f64, f64),
     app: &gtk::Application,
-    banner: &Banner,
+    banner: &R,
     scrim: &gtk::Widget,
-) -> Fan {
+) -> Fan
+where
+    R: Reporter + Clone,
+{
     let geom = Geometry::new(menu.items.len(), exit.is_some(), monitor);
     // Radius depends on output size and member count; neither is visible on a
     // device, so log what it resolved to.
