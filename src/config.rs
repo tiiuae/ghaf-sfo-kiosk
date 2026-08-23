@@ -25,8 +25,6 @@ pub struct Config {
     pub status_bar: StatusBar,
     #[serde(default)]
     pub layout: Layout,
-    #[serde(default)]
-    pub exit: ExitButton,
     pub buttons: Vec<Button>,
 }
 
@@ -79,41 +77,9 @@ impl Default for Layout {
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ExitButton {
-    #[serde(default = "default_exit_label")]
-    pub label: String,
-    #[serde(default = "default_exit_icon")]
-    pub icon: String,
-    /// Render exit as a member of this menu instead of the bottom-right corner
-    /// button. Names a button whose action kind is `menu`.
-    ///
-    /// Explicit rather than implied by a menu existing, so a config that does
-    /// not ask for it keeps the old placement -- which is what makes this field
-    /// safe to add without moving `version`.
-    #[serde(default)]
-    pub menu: Option<String>,
-}
-
-fn default_exit_label() -> String {
-    "Exit".to_owned()
-}
-
-/// Not `window-close-symbolic`: on the menu's arc an ✕ reads as "close the
-/// menu", and exit is the one press we cannot afford by accident.
-fn default_exit_icon() -> String {
-    "application-exit-symbolic".to_owned()
-}
-
-impl Default for ExitButton {
-    fn default() -> Self {
-        Self {
-            label: default_exit_label(),
-            icon: default_exit_icon(),
-            menu: None,
-        }
-    }
-}
+// No ExitButton: leaving the kiosk is a keybinding, not a widget -- see ui.rs.
+// An `exit` object from an older producer is an unknown field, so serde ignores
+// it and the contract stays at version 1.
 
 #[derive(Debug, Deserialize)]
 pub struct Button {
@@ -349,7 +315,6 @@ pub struct Kiosk {
     pub title: String,
     pub status_bar: StatusBar,
     pub layout: Layout,
-    pub exit: ExitButton,
     /// Grid buttons: everything that is not a trigger and not in a menu.
     pub buttons: Vec<ResolvedButton>,
     /// The menus, in config order.
@@ -416,7 +381,7 @@ pub fn load(path: &Path) -> Result<Kiosk> {
         })
         .collect();
 
-    let (buttons, menus, exit) = partition(resolved, cfg.exit);
+    let (buttons, menus) = partition(resolved);
 
     if buttons.is_empty() {
         // Not fatal: a corner that fans out still offers the operator something,
@@ -432,22 +397,19 @@ pub fn load(path: &Path) -> Result<Kiosk> {
         title: cfg.title,
         status_bar: cfg.status_bar,
         layout: cfg.layout,
-        exit,
         buttons,
         menus,
     })
 }
 
-/// Split the resolved buttons into the grid and the menus, and settle where
-/// exit lives.
+/// Split the resolved buttons into the grid and the menus.
 ///
 /// Forgiving like a malformed action: a `menu` naming something that is not a
 /// trigger puts its button back in the grid rather than losing it. A visible
 /// button is better evidence of a misconfiguration than an absent one.
 fn partition(
     resolved: Vec<(Option<String>, ResolvedButton)>,
-    mut exit: ExitButton,
-) -> (Vec<ResolvedButton>, Vec<Menu>, ExitButton) {
+) -> (Vec<ResolvedButton>, Vec<Menu>) {
     // Triggers first, so a member may be declared before the menu it names --
     // the nix module sorts by `order`, which need not put a trigger first.
     let mut menus: Vec<Menu> = Vec::new();
@@ -492,18 +454,11 @@ fn partition(
         }
     }
 
-    // Exit's placement, checked against the menus that actually exist.
-    if let Some(want) = &exit.menu {
-        if !menus.iter().any(|m| m.trigger.id == *want) {
-            log::warn!("exit names menu {want:?}, which does not exist; keeping the corner button");
-            exit.menu = None;
-        }
-    }
-
     // A trigger with nothing behind it does nothing when pressed, which reads
-    // as a broken kiosk. Hosting exit counts as having something.
+    // as a broken kiosk. Exit used to count as a member; it is gone, so a menu
+    // needs a real button of its own.
     menus.retain(|m| {
-        let keep = !m.items.is_empty() || exit.menu.as_deref() == Some(m.trigger.id.as_str());
+        let keep = !m.items.is_empty();
         if !keep {
             log::warn!(
                 "menu {:?} has no members; not rendering its trigger",
@@ -513,7 +468,7 @@ fn partition(
         keep
     });
 
-    (buttons, menus, exit)
+    (buttons, menus)
 }
 
 #[cfg(test)]
@@ -565,12 +520,6 @@ mod tests {
             ["network", "update", "power"],
             "arc order is config order, nearest the corner first"
         );
-        assert_eq!(
-            k.exit.menu.as_deref(),
-            Some("settings"),
-            "exit is the menu's last member, not a corner button"
-        );
-
         for b in k.buttons.iter().chain(&k.menus[0].items) {
             assert!(
                 !matches!(b.action, Action::Unsupported { .. }),
@@ -647,9 +596,10 @@ mod tests {
         assert_eq!(k.buttons.len(), 1, "the trigger is not demoted to the grid");
     }
 
-    /// Exit alone is still something behind the trigger.
+    /// A menu could once exist holding exit and nothing else. Exit is gone, so
+    /// such a trigger is now dropped.
     #[test]
-    fn a_menu_holding_only_exit_survives() {
+    fn a_menu_that_only_held_exit_is_dropped() {
         let k = parse(
             r#"{"version":1,
                 "buttons":[
@@ -658,20 +608,22 @@ mod tests {
                 "exit":{"menu":"gear"}}"#,
         )
         .unwrap();
-        assert_eq!(k.menus.len(), 1);
-        assert!(k.menus[0].items.is_empty());
-        assert_eq!(k.exit.menu.as_deref(), Some("gear"));
+        assert!(k.menus.is_empty(), "a member-less trigger is not rendered");
+        assert_eq!(k.buttons.len(), 1, "the trigger is not demoted to the grid");
     }
 
+    /// A stale `exit` object is an unknown field, and unknown fields are
+    /// ignored -- which is what keeps the contract at version 1.
     #[test]
-    fn an_exit_menu_naming_nothing_falls_back_to_the_corner() {
+    fn a_stale_exit_object_is_ignored_rather_than_fatal() {
         let k = parse(
             r#"{"version":1,
                 "buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}],
-                "exit":{"menu":"gear"}}"#,
+                "exit":{"label":"Exit kiosk","icon":"application-exit-symbolic","menu":"gear"}}"#,
         )
         .unwrap();
-        assert_eq!(k.exit.menu, None);
+        assert_eq!(k.buttons.len(), 1);
+        assert!(k.menus.is_empty());
     }
 
     /// An arc drawn from a point already on an arc has nowhere to go that is

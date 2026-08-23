@@ -18,7 +18,7 @@ use gtk::prelude::*;
 
 use crate::actions;
 use crate::actions::Reporter;
-use crate::config::{Action, ExitButton, Menu};
+use crate::config::{Action, Menu};
 
 // ── Geometry ────────────────────────────────────────────────────────────────
 
@@ -49,9 +49,8 @@ const PREFERRED_RADIUS: f64 = 280.0;
 const RADIUS_FRACTION: f64 = 0.35;
 
 /// Degrees anticlockwise from the bottom edge. Every member is spread evenly
-/// across it, exit included -- exit used to be held back at 90 with a wider gap
-/// below it, which read as a broken arc rather than as deliberate. It is still
-/// the outermost member and still rendered muted.
+/// across it. An earlier layout held one member back at 90 with a wider gap,
+/// which read as a broken arc rather than as deliberate.
 const MEMBER_ARC: (f64, f64) = (10.0, 90.0);
 
 /// Positions in the fan's own coordinate space; the fan sits flush in the
@@ -64,21 +63,11 @@ pub struct Geometry {
     pub trigger: (f64, f64),
     /// Centre of each member's icon circle, nearest the corner first.
     pub items: Vec<(f64, f64)>,
-    /// Centre of exit's icon circle, when exit is a member of this menu.
-    pub exit: Option<(f64, f64)>,
 }
 
 impl Geometry {
-    pub fn new(members: usize, with_exit: bool, monitor: (f64, f64)) -> Self {
-        // Exit is simply the last member, spaced like every other one.
-        let total = members + usize::from(with_exit);
-        let all = spread(total, MEMBER_ARC);
-        let (member_angles, exit_angle) = if with_exit {
-            all.split_last()
-                .map_or((&[][..], None), |(last, rest)| (rest, Some(*last)))
-        } else {
-            (&all[..], None)
-        };
+    pub fn new(members: usize, monitor: (f64, f64)) -> Self {
+        let all = spread(members, MEMBER_ARC);
         let radius = radius_for(monitor, &all);
 
         // Inset so the widest box clears the left edge at the top of the arc.
@@ -89,11 +78,10 @@ impl Geometry {
             let rad = deg.to_radians();
             (tx + radius * rad.cos(), ty - radius * rad.sin())
         };
-        let items: Vec<(f64, f64)> = member_angles.iter().copied().map(place).collect();
-        let exit = exit_angle.map(place);
+        let items: Vec<(f64, f64)> = all.iter().copied().map(place).collect();
 
         // Size to what it contains: nothing clipped, no dead space outside it.
-        let corners = items.iter().chain(exit.iter());
+        let corners = items.iter();
         let right = corners
             .clone()
             .map(|p| p.0 + ITEM_W / 2.0)
@@ -108,7 +96,6 @@ impl Geometry {
             radius,
             trigger: (tx, ty),
             items,
-            exit,
         }
     }
 }
@@ -210,27 +197,22 @@ impl Fan {
 }
 
 /// Build one menu's corner trigger and its arc.
-///
-/// `exit` is `Some` only when the config put the exit button in *this* menu.
 pub fn build<R>(
     menu: &Menu,
-    exit: Option<&ExitButton>,
     monitor: (f64, f64),
-    app: &gtk::Application,
     banner: &R,
     scrim: &gtk::Widget,
 ) -> Fan
 where
     R: Reporter + Clone,
 {
-    let geom = Geometry::new(menu.items.len(), exit.is_some(), monitor);
+    let geom = Geometry::new(menu.items.len(), monitor);
     // Radius depends on output size and member count; neither is visible on a
     // device, so log what it resolved to.
     log::info!(
-        "menu {:?}: {} member(s){}, radius {:.0} on a {:.0}x{:.0} output",
+        "menu {:?}: {} member(s), radius {:.0} on a {:.0}x{:.0} output",
         menu.trigger.id,
         menu.items.len(),
-        if exit.is_some() { " plus exit" } else { "" },
         geom.radius,
         monitor.0,
         monitor.1
@@ -243,7 +225,7 @@ where
     fixed.set_size_request(geom.width.ceil() as i32, geom.height.ceil() as i32);
 
     // ToggleButton for open/closed state and `:checked` styling. The cog does
-    // NOT become an X when open: exit sits on the same arc, and two X's a
+    // NOT become an X when open: an X here reads as "close the menu", and a
     // thumb's width apart is the mis-tap this layout exists to avoid.
     let trigger = gtk::ToggleButton::new();
     trigger.add_css_class("kiosk-radial-trigger");
@@ -297,25 +279,6 @@ where
         fixed.put(&button, collapsed.0, collapsed.1);
         button.set_visible(false);
         targets.push(box_at(geom.items[i]));
-        sats.push(button);
-    }
-
-    if let (Some(spec), Some(centre)) = (exit, geom.exit) {
-        let button = satellite(Some(&spec.icon), &spec.label, Some(&spec.label));
-        // Muted, and its own class: it is the only member that ends the kiosk.
-        button.add_css_class("kiosk-radial-exit");
-
-        let app = app.clone();
-        button.connect_clicked(move |_| {
-            // Quit only. The unit's ExecStopPost restores the panel and
-            // shortcuts; doing it here would not survive a crash.
-            log::info!("exit button pressed; quitting");
-            app.quit();
-        });
-
-        fixed.put(&button, collapsed.0, collapsed.1);
-        button.set_visible(false);
-        targets.push(box_at(centre));
         sats.push(button);
     }
 
@@ -507,33 +470,27 @@ mod tests {
         (1024.0, 768.0),
     ];
 
-    fn circles(g: &Geometry) -> Vec<(f64, f64)> {
-        g.items.iter().chain(g.exit.iter()).copied().collect()
-    }
-
     /// "Bounded by the left and bottom edges", asserted rather than eyeballed.
     #[test]
     fn every_member_box_stays_inside_the_fan() {
         for screen in SCREENS {
             for members in 0..=6 {
-                for with_exit in [false, true] {
-                    let g = Geometry::new(members, with_exit, screen);
-                    for (cx, cy) in circles(&g) {
-                        let left = cx - ITEM_W / 2.0;
-                        let top = cy - ICON_DIAMETER / 2.0;
-                        assert!(
-                            left >= 0.0 && top >= 0.0,
-                            "{members} members, exit={with_exit}, {screen:?}: box at \
-                             ({left}, {top}) crosses the left or top edge"
-                        );
-                        assert!(
-                            left + ITEM_W <= g.width && top + ITEM_H <= g.height,
-                            "{members} members, exit={with_exit}, {screen:?}: box at \
-                             ({left}, {top}) leaves the {}x{} fan",
-                            g.width,
-                            g.height
-                        );
-                    }
+                let g = Geometry::new(members, screen);
+                for (cx, cy) in g.items.iter().copied() {
+                    let left = cx - ITEM_W / 2.0;
+                    let top = cy - ICON_DIAMETER / 2.0;
+                    assert!(
+                        left >= 0.0 && top >= 0.0,
+                        "{members} members, {screen:?}: box at \
+                         ({left}, {top}) crosses the left or top edge"
+                    );
+                    assert!(
+                        left + ITEM_W <= g.width && top + ITEM_H <= g.height,
+                        "{members} members, {screen:?}: box at \
+                         ({left}, {top}) leaves the {}x{} fan",
+                        g.width,
+                        g.height
+                    );
                 }
             }
         }
@@ -545,58 +502,34 @@ mod tests {
     fn no_two_member_boxes_overlap() {
         for screen in SCREENS {
             for members in 2..=6 {
-                for with_exit in [false, true] {
-                    let g = Geometry::new(members, with_exit, screen);
-                    let c = circles(&g);
-                    for pair in c.windows(2) {
-                        let dx = (pair[1].0 - pair[0].0).abs();
-                        let dy = (pair[1].1 - pair[0].1).abs();
-                        // Axis-aligned boxes miss when clear in EITHER axis.
-                        assert!(
-                            dx >= ITEM_W - 0.5 || dy >= ITEM_H - 0.5,
-                            "{members} members, exit={with_exit}, {screen:?}: boxes \
-                             only dx={dx:.0} dy={dy:.0} apart, need dx>={ITEM_W} or \
-                             dy>={ITEM_H}"
-                        );
-                    }
+                let g = Geometry::new(members, screen);
+                for pair in g.items.windows(2) {
+                    let dx = (pair[1].0 - pair[0].0).abs();
+                    let dy = (pair[1].1 - pair[0].1).abs();
+                    // Axis-aligned boxes miss when clear in EITHER axis.
+                    assert!(
+                        dx >= ITEM_W - 0.5 || dy >= ITEM_H - 0.5,
+                        "{members} members, {screen:?}: boxes \
+                         only dx={dx:.0} dy={dy:.0} apart, need dx>={ITEM_W} or \
+                         dy>={ITEM_H}"
+                    );
                 }
             }
         }
-    }
-
-    /// Exit is the outermost member and spaced like every other one. It used to
-    /// be held back at 90 with a much wider gap, which read as a broken arc.
-    #[test]
-    fn exit_is_the_outermost_member_and_evenly_spaced() {
-        let g = Geometry::new(4, true, (1920.0, 1080.0));
-        let exit = g.exit.expect("exit was asked for");
-
-        // 90 degrees: directly above the trigger, against the left edge.
-        assert!((exit.0 - g.trigger.0).abs() < 0.001);
-        assert!(exit.1 < g.items.last().unwrap().1, "exit is the topmost");
-
-        let gap = |a: (f64, f64), b: (f64, f64)| (b.0 - a.0).hypot(b.1 - a.1);
-        let to_exit = gap(*g.items.last().unwrap(), exit);
-        let between = gap(g.items[0], g.items[1]);
-        assert!(
-            (to_exit - between).abs() < 1.0,
-            "exit sits {to_exit:.0} from the last member but members are \
-             {between:.0} apart -- the arc must look evenly dispersed"
-        );
     }
 
     /// A smaller output gets a smaller fan; a crowded arc overrides that, which
     /// is what stops members overlapping on a small screen.
     #[test]
     fn the_radius_follows_the_output_until_the_member_count_needs_more() {
-        let sparse_big = Geometry::new(1, true, (1920.0, 1080.0)).radius;
-        let sparse_small = Geometry::new(1, true, (1280.0, 720.0)).radius;
+        let sparse_big = Geometry::new(2, (1920.0, 1080.0)).radius;
+        let sparse_small = Geometry::new(2, (1280.0, 720.0)).radius;
         assert!(
             sparse_small < sparse_big,
             "a smaller output should get a smaller fan: {sparse_small} vs {sparse_big}"
         );
 
-        let crowded = Geometry::new(6, true, (1280.0, 720.0));
+        let crowded = Geometry::new(7, (1280.0, 720.0));
         assert!(
             crowded.radius > RADIUS_FRACTION * 720.0,
             "six members must outgrow the output's share, got {}",
@@ -610,7 +543,7 @@ mod tests {
     fn the_fan_grows_monotonically_and_fits_the_output() {
         for screen in SCREENS {
             let radii: Vec<f64> = (1..=6)
-                .map(|n| Geometry::new(n, true, screen).radius)
+                .map(|n| Geometry::new(n, screen).radius)
                 .collect();
             for pair in radii.windows(2) {
                 assert!(
@@ -619,7 +552,7 @@ mod tests {
                 );
             }
             for members in 0..=6 {
-                let g = Geometry::new(members, true, screen);
+                let g = Geometry::new(members, screen);
                 assert!(
                     g.width <= screen.0 && g.height <= screen.1,
                     "{members} members on {screen:?}: fan {}x{} does not fit",
@@ -630,12 +563,12 @@ mod tests {
         }
     }
 
-    /// The shipped SFO arc: Network, Update, Lock, Power and exit, on the
-    /// laptop's own panel. The grid is three 280px tiles with 36px gaps, centred
-    /// -- so it starts at x=504 and the fan must not reach it.
+    /// The shipped SFO arc: Network, Update, Lock, Power, on the laptop's own
+    /// panel. The grid is three 280px tiles with 36px gaps, centred -- so it
+    /// starts at x=504 and the fan must not reach it.
     #[test]
     fn the_sfo_arc_clears_the_grid_on_the_laptop_panel() {
-        let g = Geometry::new(4, true, (1920.0, 1080.0));
+        let g = Geometry::new(4, (1920.0, 1080.0));
         let grid_left = (1920.0 - (3.0 * 280.0 + 2.0 * 36.0)) / 2.0;
         assert!(
             g.width <= grid_left,

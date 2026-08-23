@@ -20,7 +20,6 @@ what the kiosk is actually running.
 | `buttons`    | array  | —       | **Required, non-empty.**                 |
 | `status_bar` | object | —       | Clock, battery, network.                 |
 | `layout`     | object | —       | `columns` (int, default 3).              |
-| `exit`       | object | —       | `label`, `icon`, and optionally `menu`.  |
 
 ### `version` is not ceremony
 
@@ -35,13 +34,16 @@ field to an existing action kind does not brick an older binary.
 That is what let menus arrive without moving `version`, and it is worth spelling out because "we
 added a feature and left the version alone" normally means someone forgot:
 
-| Direction              | What the operator sees                                                                                                                                                      |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Old binary, new config | `menu` and `exit.menu` are unknown fields, so ignored; `"kind": "menu"` is an unknown kind, so one dimmed trigger. Every real button is in the grid, exit is in the corner. |
-| New binary, old config | No trigger and no `menu` fields, so every button is in the grid and exit is in the corner.                                                                                  |
+| Direction              | What the operator sees                                                                                                                       |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Old binary, new config | `exit` is absent, so an old binary falls back to its own default and draws the small corner exit button. Every real button still renders.     |
+| New binary, old config | `exit` is an unknown field and is ignored; there is no exit button, and the chord is what leaves the kiosk.                                   |
 
-Both directions land on the pre-menu interface rather than on a dead kiosk. Bumping to `2` would
-instead make an older binary refuse to start over a change to where buttons sit.
+Both directions land on a working kiosk rather than a dead one, which is the whole test. Bumping to
+`2` would instead make an older binary refuse to start over the removal of one field.
+
+The same reasoning covered menus arriving earlier: `menu` and `kind: "menu"` are unknown to an old
+binary, so every real button simply stays in the grid.
 
 ## Buttons
 
@@ -82,28 +84,29 @@ output and on how many members there are — a projector gets a smaller one, and
 past that rather than letting two icons overlap. The kiosk logs what it settled on:
 
 ```
-menu "settings": 3 member(s) plus exit, radius 280 on a 1920x1080 output
+menu "settings": 4 member(s), radius 280 on a 1920x1080 output
 ```
 
-### Exit can live in a menu
+### There is no exit button
 
-```jsonc
-"exit": {
-  "label": "Exit kiosk",
-  "icon": "application-exit-symbolic",
-  "menu": "settings"          // omit to keep the small button in the bottom-right corner
-}
-```
+Leaving the kiosk is a **keyboard chord**, `Ctrl+Alt+Shift+L` by default, and nothing on screen
+hints at it. An operator cannot press it by accident; a technician reads the docs.
 
-Exit always takes the **top** of the arc, alone, with a wider gap below it than the members have
-between them, and it renders muted. That is not decoration: it is the only member that ends the
-kiosk, and moving it from a 34px corner button into a fan the operator opens to reach Network makes
-it materially easier to hit. For the same reason the trigger keeps its own icon when open rather than
-becoming an ✕, and `exit.icon` defaults to `application-exit-symbolic` — an ✕ on that arc reads as
-"close the menu".
+It is **not** handled here. The chord is a COSMIC keybinding declared in
+[`tiiuae/ghaf-sfo-laptop`](https://github.com/tiiuae/ghaf-sfo-laptop)
+(`sfo.services.kiosk.exit`), which spawns `systemctl --user stop sfo-kiosk.service`. That is exactly
+what the old button achieved: the application only ever quit, and it is the unit's `ExecStopPost`
+that restores the COSMIC panel and shortcuts — which is why it survives a crash or a SIGKILL.
 
-`exit.menu` is explicit rather than "exit moves into the menu if there is one", so a config that does
-not ask for the new placement keeps the old one.
+An in-app key handler was considered and is **not possible** on this surface: it is layer-shell
+`BOTTOM`, which cosmic-comp gives no keyboard focus until it is clicked, and none at all while an
+application window has focus — precisely when a technician wants out. See
+[`layer-shell-notes.md`](./layer-shell-notes.md).
+
+Because the binding is written by the same runtime lockdown that hides the panel, it exists **only
+while the kiosk runs** and is reverted when it stops.
+
+An `exit` object from an older producer is an unknown field and is ignored.
 
 ### What is forgiving, and what is not
 
@@ -112,8 +115,7 @@ not ask for the new placement keeps the old one.
 | `menu` names a button that does not exist   | Warned; the button renders **in the grid**              |
 | `menu` names a button that is not a trigger | Warned; the button renders **in the grid**              |
 | A trigger that also carries `menu`          | Warned; menus do not nest, so its own `menu` is ignored |
-| A trigger with no members and no exit       | Warned; the trigger is **not rendered**                 |
-| `exit.menu` names nothing                   | Warned; exit stays the bottom-right corner button       |
+| A trigger with no members                   | Warned; the trigger is **not rendered**                 |
 
 A button that lands back in the grid is visible and pressable, which is better evidence of a
 misconfiguration than one that is silently absent. A trigger with nothing behind it is the exception:

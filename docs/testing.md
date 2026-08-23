@@ -34,14 +34,14 @@ silent rather than loud.
 
 `src/radial.rs` — the arc arithmetic, which has no GTK in it for exactly this reason:
 
-- every member's box stays inside the fan, for 0–6 members, with and without exit, on four output
+- every member's box stays inside the fan, for 0–6 members, on four output
   sizes. This is "bounded by the left vertical edge and the bottom edge" as an assertion rather than
   as an impression of one screenshot;
 - no two icon circles come closer than the minimum gap — the property that decides whether the arc
   looks deliberate or crowded, and the reason the radius grows past the output's share when there are
   many members;
-- exit sits alone at the top with a wider gap below it than the members have between them. That gap
-  is the mis-tap mitigation, so it is asserted rather than left to a constant nobody re-reads.
+- the shipped SFO arc clears the button grid on the laptop panel, which is the constraint that
+  actually bounds the radius on the smallest output the product ships on.
 
 ## 2. A real compositor, no device
 
@@ -73,7 +73,7 @@ ways that look like nothing at all:
    an open fan.
 6. Resize the winit window small. The fan must stay inside the surface — the radius is derived from
    the output size, and the line it logged on startup says what it chose.
-7. Exit is the topmost member, visibly muted, with a clear gap below it.
+7. There is **no exit affordance** anywhere: not on the arc, not in the corner.
 
 **It does not prove** anything about the parts that only exist inside a Ghaf image — see below.
 
@@ -93,6 +93,8 @@ ways that look like nothing at all:
 - Multi-output hotplug, and touch input if the hardware has a touchscreen. The corner menu has no
   hover fallback anywhere, deliberately — but a member's hit target is its whole 132×104 box rather
   than the 72px circle it draws, and only a device says whether that is enough.
-- **Exit by accident.** It moved from a 34px button at 35% opacity in the far corner into a fan the
-  operator opens to reach Network. The gap above the last member, the muting and the icon are the
-  mitigations; whether they are sufficient is a question about thumbs, not about code.
+- **The exit chord.** `Ctrl+Alt+Shift+L` is a COSMIC keybinding written by the kiosk's own runtime
+  lockdown, so it cannot be exercised here at all — a bench cosmic-comp has no such config. On the
+  device, check it three ways: from the kiosk; **while an application window has focus**, which is
+  the case an in-app handler could never serve; and again after exiting, where it must do nothing,
+  because the binding is reverted with the rest of the lockdown.

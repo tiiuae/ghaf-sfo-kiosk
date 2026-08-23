@@ -39,6 +39,12 @@ Source read: the `src` of `cosmic-comp-1.2.0.drv` in the ghaf-pinned nixpkgs. (I
   and the fix (moving to `Top`) would put application windows _behind_ the kiosk, which defeats the
   whole design. Raise it rather than working around it.
 
+  **This is why leaving the kiosk is a compositor keybinding, not an in-app shortcut.** A GTK
+  handler for `Ctrl+Alt+Shift+L` would be dead until the operator had touched the kiosk, and dead
+  again the moment an application window took focus — which is exactly when a technician wants out.
+  The chord is declared in `tiiuae/ghaf-sfo-laptop` as a COSMIC `Spawn` binding that stops the
+  systemd unit. See `docs/config.md`.
+
 ## Verified empirically, too
 
 Against this exact compositor binary, nested (`COSMIC_BACKEND=winit`):

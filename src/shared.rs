@@ -3,23 +3,15 @@
 //
 // State that every output's kiosk surface shares.
 //
-// WHY THIS EXISTS. `ui::build` runs once per output (outputs.rs), so a laptop
-// with an external screen attached gets two complete, INDEPENDENT widget trees.
-// Each was laid out correctly for its own geometry -- and each had its own menu
-// state and its own banner. Opening the settings fan on the laptop did nothing
-// on the room's screen, and "Starting..." / "Clearing..." appeared only on the
-// surface whose button was pressed. For an operator driving the laptop while an
-// audience watches the big screen, that is the whole point missed.
+// `ui::build` runs once per output, so two screens get two independent widget
+// trees -- and, before this, two independent menu states and two banners: the
+// fan opened on one screen only, and "Starting..." showed only where it was
+// pressed.
 //
-// The obvious fix is to mirror the outputs in the compositor instead. It was
-// tried on hardware and rejected: on cosmic-comp 1.5.0 a mirroring output leaves
-// the shell's output set, which KILLS THE LAPTOP TOUCHSCREEN, and unplugging the
-// source leaves a stale mirror no command can clear. See docs/display.md in
-// tiiuae/ghaf-sfo-laptop for the measurements.
-//
-// So the surfaces stay independent -- each native, each touchable, unplug
-// harmless -- and only the STATE is shared. Geometry stays per-output (the fan
-// radius differs between a 2560x1440 and a 1920x1080 screen, and should).
+// Mirroring the outputs in the compositor instead was tried on hardware and
+// rejected; it kills the laptop touchscreen. docs/display.md in
+// tiiuae/ghaf-sfo-laptop has the measurements. So surfaces stay independent and
+// only STATE is shared -- geometry stays per-output, as it should.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -71,8 +63,8 @@ impl Shared {
         Self::default()
     }
 
-    /// The reporter every button and menu item must use, so a message lands on
-    /// every screen rather than only the one that was touched.
+    /// What every button and menu item must report through, so a message lands
+    /// on every screen and not just the one that was touched.
     pub fn reporter(&self) -> Broadcast {
         self.reporter.clone()
     }
@@ -83,11 +75,9 @@ impl Shared {
 
     /// Drop registrations whose surface has been destroyed.
     ///
-    /// Unplugging a screen calls `window.destroy()` on its surface (outputs.rs),
-    /// which leaves this struct holding widgets belonging to a window that no
-    /// longer exists. Without pruning, every replug grows both lists and a
-    /// banner is "shown" on a dead surface. A destroyed widget has no root, and
-    /// that is the cheapest liveness test GTK offers.
+    /// Unplugging a screen destroys its window (outputs.rs); without this, every
+    /// replug grows both lists and banners are "shown" on dead surfaces. No root
+    /// is GTK's cheapest liveness test.
     pub fn prune(&self) {
         self.reporter
             .0
@@ -108,16 +98,14 @@ impl Shared {
         let id = menu_id.to_owned();
         let me = fan.clone();
         fan.connect_toggled(move |open| {
-            // Cloned out of the RefCell before touching any peer: setting a
-            // peer's state re-enters this callback for THAT fan, which borrows
-            // the same list again.
+            // Cloned out of the RefCell first: setting a peer re-enters this
+            // callback for that fan, which borrows the same list.
             let peers: Vec<(String, Fan)> = fans.borrow().clone();
             for (peer_id, peer) in &peers {
                 if peer_id != &id || peer.same_as(&me) {
                     continue;
                 }
-                // Terminates: GTK emits `toggled` only on a real change, so once
-                // every peer already holds `open` the cascade stops.
+                // Terminates: GTK emits `toggled` only on a real change.
                 if peer.is_open() != open {
                     peer.set_open(open);
                 }

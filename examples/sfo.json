@@ -61,7 +61,7 @@
       "id": "settings",
       "label": "Settings",
       "icon": "emblem-system-symbolic",
-      "description": "Network, updates, power and exit",
+      "description": "Network, updates and power",
       "action": { "kind": "menu" }
     },
     {
@@ -97,10 +97,5 @@
       "menu": "settings",
       "action": { "kind": "exec", "argv": ["cosmic-applet-power"] }
     }
-  ],
-  "exit": {
-    "label": "Exit kiosk",
-    "icon": "application-exit-symbolic",
-    "menu": "settings"
-  }
+  ]
 }

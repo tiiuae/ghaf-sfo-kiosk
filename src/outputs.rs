@@ -85,7 +85,6 @@ fn reconcile(
         let size = monitor.geometry();
         let content = crate::ui::build(
             kiosk,
-            app,
             (f64::from(size.width()), f64::from(size.height())),
             shared,
         );

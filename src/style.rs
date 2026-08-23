@@ -101,7 +101,7 @@ window.kiosk-root {
     border-color: #46596f;
     color: #e8ecf1;
 }
-/* Open state. The cog never becomes an X: exit sits on the same arc. */
+/* Open state. The cog never becomes an X: an X here reads as 'close the menu'. */
 .kiosk-radial-trigger:checked {
     background-color: #33445a;
     background-image: none;
@@ -139,37 +139,6 @@ window.kiosk-root {
     font-size: 15px;
     font-weight: bold;
     color: #c2ccd8;
-}
-
-/*
- * Exit is the only member that ends the kiosk, so it stays muted until reached
- * for. Being the outermost member on the arc is the other half; it is no longer
- * held back by a wider gap, which read as a broken arc.
- */
-.kiosk-radial-exit { opacity: 0.55; }
-.kiosk-radial-exit:hover, .kiosk-radial-exit:focus { opacity: 1.0; }
-.kiosk-radial-exit:hover .kiosk-radial-item-icon {
-    background-color: #3a2530;
-    border-color: #7a4a58;
-}
-
-/* ── the corner exit, used when no menu claimed it ───────────────────────── */
-.kiosk-exit {
-    margin: 14px;
-    min-width: 34px;
-    min-height: 34px;
-    padding: 4px;
-    border-radius: 17px;
-    opacity: 0.35;
-    background-color: transparent;
-    background-image: none;
-    box-shadow: none;
-    border: none;
-}
-.kiosk-exit:hover {
-    opacity: 1.0;
-    background-color: #3a2530;
-    background-image: none;
 }
 
 /* ── the banner ──────────────────────────────────────────────────────────── */

@@ -84,15 +84,11 @@ fn main() -> std::process::ExitCode {
             .filter(|b| matches!(b.action, config::Action::Unsupported { .. }))
             .count();
         println!(
-            "ok: {} button(s) in the grid, {} in {} menu(s), {} unconfigured; exit is {}",
+            "ok: {} button(s) in the grid, {} in {} menu(s), {} unconfigured",
             kiosk.buttons.len(),
             in_menus,
             kiosk.menus.len(),
             unconfigured,
-            match &kiosk.exit.menu {
-                Some(m) => format!("in menu {m:?}"),
-                None => "the corner button".to_owned(),
-            }
         );
         return std::process::ExitCode::SUCCESS;
     }

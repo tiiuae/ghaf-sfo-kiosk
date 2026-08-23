@@ -36,7 +36,6 @@ pub fn icon_image(icon: &str) -> gtk::Image {
 /// fan radius -- see `radial::Geometry`.
 pub fn build(
     kiosk: &Kiosk,
-    app: &gtk::Application,
     monitor: (f64, f64),
     shared: &crate::shared::Shared,
 ) -> gtk::Widget {
@@ -144,12 +143,9 @@ pub fn build(
         .menus
         .iter()
         .map(|menu| {
-            let takes_exit = kiosk.exit.menu.as_deref() == Some(menu.trigger.id.as_str());
             let fan = radial::build(
                 menu,
-                takes_exit.then_some(&kiosk.exit),
                 monitor,
-                app,
                 &reporter,
                 &scrim_widget,
             );
@@ -192,28 +188,14 @@ pub fn build(
         overlay.add_controller(keys);
     }
 
-    // ── exit ────────────────────────────────────────────────────────────────
+    // No exit button, deliberately: nothing on screen an operator can press by
+    // accident. Leaving the kiosk is Ctrl+Alt+Shift+L, a COSMIC keybinding
+    // declared in tiiuae/ghaf-sfo-laptop that stops the unit -- so ExecStopPost
+    // still restores the panel however the kiosk died.
     //
-    // Only when no menu claimed it. Small and in the far corner: a maintenance
-    // affordance, not part of the workflow.
-    if kiosk.exit.menu.is_none() {
-        let exit = gtk::Button::new();
-        exit.set_icon_name(&kiosk.exit.icon);
-        exit.set_tooltip_text(Some(&kiosk.exit.label));
-        exit.add_css_class("kiosk-exit");
-        exit.set_halign(gtk::Align::End);
-        exit.set_valign(gtk::Align::End);
-
-        let app = app.clone();
-        exit.connect_clicked(move |_| {
-            // Quit cleanly. The systemd unit's ExecStopPost is what restores the
-            // COSMIC panel and shortcuts -- doing it here instead would not
-            // survive a crash, which is the case that matters.
-            log::info!("exit button pressed; quitting");
-            app.quit();
-        });
-        overlay.add_overlay(&exit);
-    }
+    // It cannot be a key handler here: on layer-shell BOTTOM this surface gets
+    // no keyboard focus until clicked, and none while an application window has
+    // it -- exactly when a technician wants out. docs/layer-shell-notes.md.
 
     overlay.upcast()
 }
