@@ -132,7 +132,10 @@ fn spawn_and_track<R: Reporter + Clone>(
 pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R, busy: &Busy) {
     let mut await_job: Option<AwaitJob> = None;
     let (argv, single_instance): (Vec<String>, Option<SingleInstance>) = match action {
-        Action::Exec { argv, single_instance } => (argv.clone(), single_instance.clone()),
+        Action::Exec {
+            argv,
+            single_instance,
+        } => (argv.clone(), single_instance.clone()),
         Action::Givc {
             argv,
             target,

@@ -185,8 +185,7 @@ impl Fan {
     /// Notified whenever this fan opens or closes, however it was driven.
     /// Everything routes through the trigger, so this sees every path.
     pub fn connect_toggled<F: Fn(bool) + 'static>(&self, f: F) {
-        self.trigger
-            .connect_toggled(move |t| f(t.is_active()));
+        self.trigger.connect_toggled(move |t| f(t.is_active()));
     }
 
     /// Whether two handles are the same fan, so a broadcast can skip its
@@ -544,9 +543,7 @@ mod tests {
     #[test]
     fn the_fan_grows_monotonically_and_fits_the_output() {
         for screen in SCREENS {
-            let radii: Vec<f64> = (1..=6)
-                .map(|n| Geometry::new(n, screen).radius)
-                .collect();
+            let radii: Vec<f64> = (1..=6).map(|n| Geometry::new(n, screen).radius).collect();
             for pair in radii.windows(2) {
                 assert!(
                     pair[1] >= pair[0],

@@ -534,9 +534,7 @@ pub fn load(path: &Path) -> Result<Kiosk> {
 /// Forgiving like a malformed action: a `menu` naming something that is not a
 /// trigger puts its button back in the grid rather than losing it. A visible
 /// button is better evidence of a misconfiguration than an absent one.
-fn partition(
-    resolved: Vec<(Option<String>, ResolvedButton)>,
-) -> (Vec<ResolvedButton>, Vec<Menu>) {
+fn partition(resolved: Vec<(Option<String>, ResolvedButton)>) -> (Vec<ResolvedButton>, Vec<Menu>) {
     // Triggers first, so a member may be declared before the menu it names --
     // the nix module sorts by `order`, which need not put a trigger first.
     let mut menus: Vec<Menu> = Vec::new();
@@ -747,7 +745,10 @@ mod tests {
                 "buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}]}"#,
         )
         .unwrap();
-        assert_eq!(with.logo.as_deref(), Some("/nix/store/x/ghaf-logo-512px.png"));
+        assert_eq!(
+            with.logo.as_deref(),
+            Some("/nix/store/x/ghaf-logo-512px.png")
+        );
         assert_eq!(with.title, "SFO", "the title is kept as the tooltip");
 
         let without = parse(
@@ -1188,7 +1189,10 @@ mod tests {
                  "single_instance":true,"window_app_id":"com.system76.CosmicSettings"}}]}"#,
         )
         .unwrap();
-        let Action::Exec { single_instance, .. } = &k.buttons[0].action else {
+        let Action::Exec {
+            single_instance, ..
+        } = &k.buttons[0].action
+        else {
             panic!("expected an exec action");
         };
         assert_eq!(

@@ -34,10 +34,10 @@ field to an existing action kind does not brick an older binary.
 That is what let menus arrive without moving `version`, and it is worth spelling out because "we
 added a feature and left the version alone" normally means someone forgot:
 
-| Direction              | What the operator sees                                                                                                                       |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Old binary, new config | `exit` is absent, so an old binary falls back to its own default and draws the small corner exit button. Every real button still renders.     |
-| New binary, old config | `exit` is an unknown field and is ignored; there is no exit button, and the chord is what leaves the kiosk.                                   |
+| Direction              | What the operator sees                                                                                                                    |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Old binary, new config | `exit` is absent, so an old binary falls back to its own default and draws the small corner exit button. Every real button still renders. |
+| New binary, old config | `exit` is an unknown field and is ignored; there is no exit button, and the chord is what leaves the kiosk.                               |
 
 Both directions land on a working kiosk rather than a dead one, which is the whole test. Bumping to
 `2` would instead make an older binary refuse to start over the removal of one field.
