@@ -221,10 +221,14 @@ launcher and opening a different one can hand the second the first's old number.
 GIVC identity to ask in the first place, so the same compositor check is the only option there too —
 it just needs a real window to exist, which most `exec` targets don't. There is no way to validate
 that at parse time (the kiosk can't tell in advance whether an arbitrary command opens a window), so
-setting `single_instance` on a target that never does just means the compositor check never finds a
-match and the button always launches fresh — quietly wrong configuration, not a crash. `givc-service`
-is the one kind that's rejected outright at parse time, because a systemd unit definitively has no
-toplevel to raise, ever.
+setting `single_instance` on a target that never does isn't just a quietly wrong configuration: the
+compositor check never finds a match, so every press locks the button for the full launch-grace
+period (currently 45s) waiting for a window that will never appear, then unlocks with a "taking a
+while" banner — on every single press, not just the first. `exec`/`givc-app` missing `window_app_id`
+are rejected outright at parse time (see below), and so is `givc-service`, because a systemd unit
+definitively has no toplevel to raise, ever. `menu` is different again: `single_instance` on a menu
+trigger is silently ignored rather than rejected, since a trigger's own action is never resolved
+through this same validation path at all.
 
 `window_app_id` is **required** whenever `single_instance` is set, and matched exactly, not as a
 substring. It is not derivable from `app`/`args`/`argv` — a Wayland `app_id` is set by the

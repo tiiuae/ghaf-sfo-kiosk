@@ -17,11 +17,12 @@
 // `activate`/`unset_minimized`.
 //
 // A fresh connection per attempt, not one kept open for the kiosk's lifetime:
-// this only runs on a single_instance button's press, so the cost of a
-// roundtrip on a local socket is not worth folding a second event queue into
-// the GTK main loop. It does run on a background thread, though -- several
-// blocking roundtrips on the GTK thread would freeze the whole kiosk if
-// cosmic-comp were ever slow to answer.
+// this runs once on a single_instance button's press, and then again on every
+// tick of wait_for_window_async's poll loop while a launch is settling, so the
+// cost of a roundtrip on a local socket is not worth folding a second event
+// queue into the GTK main loop. It does run on a background thread, though --
+// several blocking roundtrips on the GTK thread would freeze the whole kiosk
+// if cosmic-comp were ever slow to answer.
 //
 // Verified against a live device: a plain, un-sandboxed client connecting the
 // ordinary way is NOT filtered by cosmic-comp's `client_not_sandboxed` check,
@@ -291,12 +292,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppData {
             return;
         };
         match &*interface {
-            // get_cosmic_toplevel and the non-deprecated `done` event both
-            // need version 2. Binding higher than the compositor advertises
-            // is a protocol error that kills the connection outright, so
-            // clamp to what it actually offers -- and skip entirely below
-            // that, leaving `toplevel_info` None, which the caller already
-            // treats as Unavailable.
+            // get_cosmic_toplevel needs version 2 (the `done` event this
+            // code actually waits on is ext_foreign_toplevel_handle_v1::done,
+            // v1 -- see connect_and_settle). Binding higher than the
+            // compositor advertises is a protocol error that kills the
+            // connection outright, so clamp to what it actually offers --
+            // and skip entirely below that, leaving `toplevel_info` None,
+            // which the caller already treats as Unavailable.
             "zcosmic_toplevel_info_v1" if version >= 2 => {
                 app_data.toplevel_info = Some(
                     registry.bind::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
@@ -496,6 +498,15 @@ fn connect_and_settle(
     ))
 }
 
+/// Whether `t`'s `app_id` exactly equals `app_id`. Exact, not substring:
+/// `app_id` is the specific string a product's config names for one
+/// application, and a looser match risks raising the wrong one -- "Plan"
+/// would otherwise match "Mission Planner". Pulled out so `find_toplevel_status`
+/// and `activate_by_app_id` can't silently drift apart on this.
+fn matches_exactly(t: &Toplevel, app_id: &str) -> bool {
+    t.app_id.as_deref() == Some(app_id)
+}
+
 /// Whether a toplevel with this exact `app_id` currently exists, without
 /// touching it. Used only by `wait_for_window_async`'s polling loop -- see
 /// `ToplevelStatus::Unavailable`'s own doc comment for how it is treated
@@ -516,7 +527,7 @@ fn find_toplevel_status(app_id: &str) -> ToplevelStatus {
     if app_data
         .toplevels
         .iter()
-        .any(|t| t.app_id.as_deref() == Some(app_id))
+        .any(|t| matches_exactly(t, app_id))
     {
         ToplevelStatus::Found
     } else {
@@ -532,10 +543,8 @@ fn find_toplevel_status(app_id: &str) -> ToplevelStatus {
     }
 }
 
-/// Ask cosmic-comp to raise and focus the toplevel whose `app_id` exactly
-/// equals `app_id`. Exact, not substring: `app_id` is the specific string a
-/// product's config names for one application, and a looser match risks
-/// raising the wrong one -- "Plan" would otherwise match "Mission Planner".
+/// Ask cosmic-comp to raise and focus the toplevel matching `app_id` -- see
+/// `matches_exactly` for what "matching" means here.
 fn activate_by_app_id(app_id: &str) -> Activation {
     let (_conn, mut event_queue, mut app_data) = match connect_and_settle(10) {
         Ok(v) => v,
@@ -561,7 +570,7 @@ fn activate_by_app_id(app_id: &str) -> Activation {
     let Some(toplevel) = app_data
         .toplevels
         .iter()
-        .find(|t| t.app_id.as_deref() == Some(app_id))
+        .find(|t| matches_exactly(t, app_id))
     else {
         // A settled connection reporting no match is not an error, so this
         // stays at debug -- but a caller chasing a false "not found" needs to

@@ -5,11 +5,15 @@
 // the journal with the full argv. A kiosk that silently does nothing leaves the
 // operator with no desktop, launcher or terminal to diagnose from.
 //
-// Never wait for the child and never impose a timeout: an `exec` action runs the
-// application itself, and `cosmic-settings network` exits when the operator
-// closes the window, possibly an hour later. Spawn, report a non-zero exit,
-// otherwise stay quiet. stdout/stderr are inherited so they land in the journal
-// under the kiosk's own unit.
+// Plain (non-singleton) buttons never wait for the child or impose a timeout:
+// an `exec` action runs the application itself, and `cosmic-settings network`
+// exits when the operator closes the window, possibly an hour later. Spawn,
+// report a non-zero exit, otherwise stay quiet. stdout/stderr are inherited so
+// they land in the journal under the kiosk's own unit.
+//
+// A `single_instance` button is different: `launch_singleton` keeps the
+// button locked until its window actually appears (or a grace period
+// elapses), not merely until the process exits -- see its own doc comment.
 
 use gtk::gio;
 use gtk::glib;
@@ -34,9 +38,12 @@ pub trait Reporter: 'static {
 ///
 /// Without it every press spawns another process, and for a button whose child
 /// IS a window that is one window per press -- three stacked cosmic-applet-power
-/// windows was the report that prompted this. Cleared when the child exits, or
-/// for an awaited GIVC action when the job leaves the registry, so a second
-/// press cannot re-queue an install that is still running.
+/// windows was the report that prompted this. Cleared when the child exits (or,
+/// for a `single_instance` button whose argv does NOT exit quickly -- an `exec`
+/// action IS the application -- once its window actually appears; see
+/// `launch_singleton`), or for an awaited GIVC action when the job leaves the
+/// registry, so a second press cannot re-queue an install that is still
+/// running.
 ///
 /// For a `single_instance` button this also covers the compositor check
 /// itself: that check is asynchronous too (a background thread, see
@@ -169,7 +176,17 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R,
     // still going is a press the operator has already made.
     if busy.get() {
         log::info!("button {label:?} pressed while its previous run is still going; ignoring");
-        reporter.info(&format!("{label} is already open"));
+        // A single_instance button's busy window never overlaps with its
+        // window actually being open and idle -- it's cleared the moment a
+        // raise succeeds (see bring_to_front_or_launch), so "is already
+        // open" would be wrong here: what's actually happening is the
+        // compositor check or the launch itself, still in flight.
+        let message = if single_instance.is_some() {
+            format!("{label} is still starting…")
+        } else {
+            format!("{label} is already open")
+        };
+        reporter.info(&message);
         return;
     }
 
@@ -226,7 +243,12 @@ fn bring_to_front_or_launch<R: Reporter + Clone>(
             }
             launch_singleton(argv, label, reporter, busy, app_id, argv_exits_quickly);
         } else {
-            log::info!("button {label:?}: brought its window to the front");
+            // `activate` has no reply -- cosmic-comp could decline, or the
+            // window could close in the gap between this check and the
+            // request landing -- so this only claims to have asked, not
+            // that the window is confirmed on screen.
+            log::info!("button {label:?}: asked the compositor to bring its window to the front");
+            reporter.info(&format!("{label} is already open"));
             busy.set(false);
         }
     });

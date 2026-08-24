@@ -290,8 +290,8 @@ fn single_instance_for(raw: &RawAction, kind: &str) -> Result<Option<SingleInsta
         // as the field being absent entirely rather than let it slip through
         // as Some("").
         (true, None) | (true, Some(_)) => Err(format!(
-            "action kind {kind:?} sets \"single_instance\" without \"window_app_id\", which is \
-             required to tell whether the window is already open"
+            "action kind {kind:?} sets \"single_instance\" without a real \"window_app_id\", \
+             which is required to tell whether the window is already open"
         )),
         (false, _) => Ok(None),
     }
