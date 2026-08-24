@@ -272,6 +272,11 @@ fn launch_singleton<R: Reporter + Clone>(
                         "button {label:?}: no window appeared within the grace period; \
                          unlocking anyway"
                     );
+                    // Otherwise "Starting {label}…" from above is the last
+                    // thing the operator ever sees -- nothing supersedes it,
+                    // so a slow or failed launch reads as one that is still
+                    // in progress forever.
+                    reporter.info(&format!("{label} is taking a while — check the logs"));
                 }
                 busy.set(false);
             });

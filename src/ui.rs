@@ -127,8 +127,10 @@ pub fn build(
         let action = spec.action.clone();
         let name = spec.label.clone();
         let reporter = reporter.clone();
-        // Per button, so a slow one cannot block a different one.
-        let busy = actions::Busy::new();
+        // Per button id, not per output: shared.busy_for gives the SAME flag
+        // to this button on every screen, so a press on one screen is visible
+        // to the others. See Shared::busy_for.
+        let busy = shared.busy_for(&spec.id);
         button.connect_clicked(move |_| actions::dispatch(&action, &name, &reporter, &busy));
 
         grid.append(&button);
@@ -157,12 +159,7 @@ pub fn build(
         .menus
         .iter()
         .map(|menu| {
-            let fan = radial::build(
-                menu,
-                monitor,
-                &reporter,
-                &scrim_widget,
-            );
+            let fan = radial::build(menu, monitor, &reporter, &scrim_widget, shared);
             overlay.add_overlay(&fan.widget);
             // Link this menu to the SAME menu on every other output, so opening
             // the fan on the laptop opens it on the room's screen too.

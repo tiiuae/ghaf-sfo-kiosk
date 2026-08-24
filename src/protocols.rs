@@ -13,10 +13,17 @@
 // cosmic-toplevel-info-unstable-v1.xml declares `workspace_enter` /
 // `workspace_leave` events referencing `zcosmic_workspace_handle_v1`, and
 // wayland-scanner generates a full `Event` enum covering the whole protocol
-// regardless of which version a client actually binds. Those two events are
-// version-gated (deprecated-since="3", never sent to a client binding
-// version 2, which is what toplevels.rs does) so they are provably dead code
-// here -- but the type still has to exist for the generated code to compile.
+// regardless of which version a client actually binds. `deprecated-since="3"`
+// on those two is advisory, not a version gate -- it does not stop the
+// compositor sending them to a client bound at version 2, which is what
+// toplevels.rs does (`version.min(2)` on its zcosmic_toplevel_info_v1 bind).
+// The actually version-gated pair is their `since="3"` replacement,
+// `ext_workspace_enter`/`ext_workspace_leave`: those genuinely can never
+// reach a v2-bound client. Either way nothing here is dead by protocol
+// mechanics alone -- toplevels.rs's Dispatch impl for
+// zcosmic_toplevel_handle_v1 just discards every event with a catch-all `_`
+// arm, workspace ones included, so the type still has to exist for the
+// generated code to compile but nothing in this crate ever reads it.
 // Trimming them out of the vendored XML instead is NOT safe: Wayland opcodes
 // are assigned by an event's *position* in the file, not an explicit id, so
 // deleting one from the middle would silently renumber every event after it

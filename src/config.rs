@@ -247,13 +247,24 @@ impl Action {
         match raw.kind.as_str() {
             "exec" => {
                 if raw.argv.is_empty() {
-                    Self::Unsupported {
+                    return Self::Unsupported {
                         reason: "action kind \"exec\" has an empty argv".to_owned(),
-                    }
-                } else {
-                    Self::Exec {
-                        argv: raw.argv.clone(),
-                    }
+                    };
+                }
+                // Like "givc-service": an exec'd process has no toplevel for
+                // the compositor to ask about, so nothing here could ever
+                // honour the flag. Rejecting it explicitly, rather than
+                // silently ignoring it, is what stops a typo'd config from
+                // looking like single-instance behaviour was configured when
+                // it was never possible to deliver.
+                if raw.single_instance {
+                    return Self::Unsupported {
+                        reason: "action kind \"exec\" does not support \"single_instance\""
+                            .to_owned(),
+                    };
+                }
+                Self::Exec {
+                    argv: raw.argv.clone(),
                 }
             }
             "givc-app" => {
@@ -283,10 +294,17 @@ impl Action {
                 // panicking, and a `window_app_id` obtained any way other
                 // than this match arm proving it Some would be one too.
                 let single_instance = match (raw.single_instance, raw.window_app_id.as_ref()) {
-                    (true, Some(window_app_id)) => Some(SingleInstance {
-                        window_app_id: window_app_id.clone(),
-                    }),
-                    (true, None) => {
+                    (true, Some(window_app_id)) if !window_app_id.is_empty() => {
+                        Some(SingleInstance {
+                            window_app_id: window_app_id.clone(),
+                        })
+                    }
+                    // An empty string is not a real app_id -- no toplevel's
+                    // app_id is ever "", so this would never match anything
+                    // and single_instance would silently behave as if it were
+                    // always off. Treated the same as the field being absent
+                    // entirely rather than let it slip through as Some("").
+                    (true, None) | (true, Some(_)) => {
                         return Self::Unsupported {
                             reason: "action kind \"givc-app\" sets \"single_instance\" without \
                                      \"window_app_id\", which is required to tell whether the \
@@ -1117,6 +1135,32 @@ mod tests {
             r#"{"version":1,"buttons":[{"id":"c","label":"C","action":{
                  "kind":"givc-service","vm":"flatpak-vm","app":"sfo-clear.service",
                  "single_instance":true,
+                 "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+    }
+
+    #[test]
+    fn an_exec_does_not_support_single_instance() {
+        // Same reasoning as givc-service: an exec'd process has no toplevel
+        // for the compositor to ask about.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"a","label":"A","action":{
+                 "kind":"exec","argv":["true"],"single_instance":true}}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+    }
+
+    #[test]
+    fn a_singleton_with_an_empty_window_app_id_is_unsupported() {
+        // "" matches no real toplevel's app_id, so this would silently
+        // behave as if single_instance were never set.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"l","label":"L","action":{
+                 "kind":"givc-app","vm":"flatpak-vm","app":"run-flatpak-app",
+                 "single_instance":true,"window_app_id":"",
                  "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
         )
         .unwrap();
