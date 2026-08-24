@@ -50,10 +50,12 @@ impl Busy {
     pub fn new() -> Self {
         Self::default()
     }
-    fn set(&self, v: bool) {
+    // pub(crate), not private: shared.rs's own tests need to observe the
+    // identity `busy_for` promises without a compositor or GTK involved.
+    pub(crate) fn set(&self, v: bool) {
         self.0.set(v);
     }
-    fn get(&self) -> bool {
+    pub(crate) fn get(&self) -> bool {
         self.0.get()
     }
 }
@@ -408,7 +410,29 @@ fn still_running(job: &AwaitJob) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::{should_launch, Activation};
+    use super::{dispatch, should_launch, Activation, Busy, Reporter};
+    use crate::config::{Action, SingleInstance};
+    use gtk::glib;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[derive(Clone, Default)]
+    struct FakeReporter(Rc<RefCell<Vec<String>>>);
+
+    impl FakeReporter {
+        fn messages(&self) -> Vec<String> {
+            self.0.borrow().clone()
+        }
+    }
+
+    impl Reporter for FakeReporter {
+        fn info(&self, message: &str) {
+            self.0.borrow_mut().push(format!("info: {message}"));
+        }
+        fn error(&self, message: &str) {
+            self.0.borrow_mut().push(format!("error: {message}"));
+        }
+    }
 
     #[test]
     fn a_window_already_on_screen_is_not_launched_again() {
@@ -425,5 +449,74 @@ mod tests {
         assert!(should_launch(&Activation::Unavailable(
             "no Wayland connection".to_owned()
         )));
+    }
+
+    #[test]
+    fn a_busy_button_is_ignored_without_spawning() {
+        let reporter = FakeReporter::default();
+        let busy = Busy::new();
+        busy.set(true);
+        let action = Action::Exec {
+            argv: vec!["true".to_owned()],
+            single_instance: None,
+        };
+        dispatch(&action, "Test", &reporter, &busy);
+        assert_eq!(
+            reporter.messages(),
+            vec!["info: Test is already open".to_owned()],
+            "the busy gate must fire before argv is ever touched"
+        );
+    }
+
+    #[test]
+    fn a_singleton_press_sets_busy_before_the_compositor_answers() {
+        let _guard = crate::GLOBAL_MAIN_CONTEXT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        // busy.set(true) happens synchronously in bring_to_front_or_launch,
+        // before the async compositor check even starts -- pinned here
+        // without waiting for that check to actually resolve.
+        let reporter = FakeReporter::default();
+        let busy = Busy::new();
+        let action = Action::Givc {
+            argv: vec!["/nonexistent/givc-cli".to_owned()],
+            target: "test".to_owned(),
+            await_job: None,
+            single_instance: Some(SingleInstance {
+                window_app_id: "nothing.matches".to_owned(),
+                argv_exits_quickly: true,
+            }),
+        };
+        dispatch(&action, "Test", &reporter, &busy);
+        assert!(busy.get());
+
+        // Drain the pending check before returning. compute_then_deliver's
+        // glib::timeout_add_local always posts to the process's one shared
+        // default MainContext (there's no way to give it an isolated one),
+        // so an abandoned call here would sit armed on that context
+        // forever, ready to fire into this test's already-dropped state the
+        // next time ANY test -- possibly much later -- happens to pump it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while busy.get() && std::time::Instant::now() < deadline {
+            glib::MainContext::default().iteration(true);
+        }
+        assert!(
+            !busy.get(),
+            "the abandoned compositor check must settle on its own within the deadline"
+        );
+    }
+
+    #[test]
+    fn a_spawn_failure_reports_and_clears_busy() {
+        let reporter = FakeReporter::default();
+        let busy = Busy::new();
+        let action = Action::Exec {
+            argv: vec!["/definitely/does/not/exist/xyz123".to_owned()],
+            single_instance: None,
+        };
+        dispatch(&action, "Test", &reporter, &busy);
+        assert!(!busy.get());
+        assert!(reporter.messages().iter().any(|m| m.starts_with("error:")));
     }
 }
