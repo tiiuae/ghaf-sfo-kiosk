@@ -131,19 +131,17 @@ fn spawn_and_track<R: Reporter + Clone>(
 /// Run `action`, reporting progress and outcome through `reporter`.
 pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R, busy: &Busy) {
     let mut await_job: Option<AwaitJob> = None;
-    let mut single_instance: Option<SingleInstance> = None;
-    let argv: Vec<String> = match action {
-        Action::Exec { argv } => argv.clone(),
+    let (argv, single_instance): (Vec<String>, Option<SingleInstance>) = match action {
+        Action::Exec { argv, single_instance } => (argv.clone(), single_instance.clone()),
         Action::Givc {
             argv,
             target,
             await_job: job,
-            single_instance: si,
+            single_instance,
         } => {
             log::info!("button {label:?} targets {target}");
             await_job = job.clone();
-            single_instance = si.clone();
-            argv.clone()
+            (argv.clone(), single_instance.clone())
         }
         // The fan handles a trigger's presses, so reaching here means it was
         // rendered in the grid -- which config::partition never does. Log rather

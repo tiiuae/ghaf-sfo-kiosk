@@ -136,6 +136,10 @@ of the first with its arc through the first's. The contract has no way to say "t
 `argv` is an array, never a shell string. The kiosk executes it directly, so there is no shell, no
 quoting rules to get wrong, and nothing to inject into.
 
+Supports `single_instance` for a target that opens a real window — see that section below. Most
+`exec` targets don't (a one-shot command has no toplevel to raise), but one that does, like
+`cosmic-settings`, is raised exactly like a flatpak launcher.
+
 ### `givc-app` — start an application in another VM
 
 ```json
@@ -186,6 +190,9 @@ does not.
 
 #### `single_instance` — for a launcher, so a repeat press does not stack a second window
 
+Available on `givc-app` and `exec` alike — the check is a plain Wayland query, with nothing
+GIVC-specific in it, so any target that opens a real window can use it:
+
 ```json
 {
   "kind": "givc-app",
@@ -197,21 +204,38 @@ does not.
 }
 ```
 
+```json
+{
+  "kind": "exec",
+  "argv": ["cosmic-settings", "network"],
+  "single_instance": true,
+  "window_app_id": "com.system76.CosmicSettings"
+}
+```
+
 On a repeat press, the kiosk asks the compositor directly whether a window with this exact
 `window_app_id` already exists — if so, it raises that window instead of starting a second copy.
-Deliberately **not** a GIVC query: `run-flatpak-app@N` unit numbers are reused slots, not stable
-identities, so asking GIVC "is this app still running" is unsound — closing one launcher and opening
-a different one can hand the second the first's old number.
+For `givc-app` this is deliberately **not** a GIVC query: `run-flatpak-app@N` unit numbers are reused
+slots, not stable identities, so asking GIVC "is this app still running" is unsound — closing one
+launcher and opening a different one can hand the second the first's old number. `exec` never had a
+GIVC identity to ask in the first place, so the same compositor check is the only option there too —
+it just needs a real window to exist, which most `exec` targets don't. There is no way to validate
+that at parse time (the kiosk can't tell in advance whether an arbitrary command opens a window), so
+setting `single_instance` on a target that never does just means the compositor check never finds a
+match and the button always launches fresh — quietly wrong configuration, not a crash. `givc-service`
+is the one kind that's rejected outright at parse time, because a systemd unit definitively has no
+toplevel to raise, ever.
 
 `window_app_id` is **required** whenever `single_instance` is set, and matched exactly, not as a
-substring. It is not derivable from `app` or `args` — a flatpak's Wayland `app_id` is set by its own
-toolkit and is routinely unrelated to its GIVC name. Find it by running the application and reading
-back what the compositor reports for its window, e.g. with a client that binds
-`ext_foreign_toplevel_list_v1` and reads each toplevel's `app_id` event; Barq's, for instance, is
-`"BARQ Ground Control Station"`, not `"org.barq.Barq"`. If the application ever changes its own
-`app_id` — an update to its toolkit or its own window title logic — this value goes stale silently:
-nothing in this repo or in `ghaf-sfo-laptop`'s build-time checks can catch it, because there is no
-source of truth to check against.
+substring. It is not derivable from `app`/`args`/`argv` — a Wayland `app_id` is set by the
+application's own toolkit and is routinely unrelated to its GIVC name or its command line. Find it
+by running the application and reading back what the compositor reports for its window, e.g. with a
+client that binds `ext_foreign_toplevel_list_v1` and reads each toplevel's `app_id` event; Barq's,
+for instance, is `"BARQ Ground Control Station"`, not `"org.barq.Barq"`, and `cosmic-settings`'s is
+`"com.system76.CosmicSettings"`, not derivable from its `argv` at all. If the application ever
+changes its own `app_id` — an update to its toolkit or its own window title logic — this value goes
+stale silently: nothing in this repo or in `ghaf-sfo-laptop`'s build-time checks can catch it,
+because there is no source of truth to check against.
 
 ### `menu` — a corner trigger, not a command
 
