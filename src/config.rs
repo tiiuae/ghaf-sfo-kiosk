@@ -196,7 +196,14 @@ pub struct SingleInstance {
 pub enum Action {
     /// Run a command locally in the gui-vm. argv form only: there is no shell,
     /// so there is no quoting to get wrong and nothing to inject into.
-    Exec { argv: Vec<String> },
+    ///
+    /// `single_instance` is only meaningful for a target that actually opens
+    /// a window -- see `single_instance_for`'s own doc comment for why an
+    /// `exec` target is not inherently unable to support it.
+    Exec {
+        argv: Vec<String>,
+        single_instance: Option<SingleInstance>,
+    },
     /// Start a declared GIVC application in another VM. Already fully resolved
     /// to an argv by the nix module. `target` is "<app> in <vm>", for the log:
     /// the button's own label says what the operator wanted, `target` says
@@ -242,6 +249,37 @@ fn await_job_for(raw: &RawAction, name: &str) -> Option<AwaitJob> {
     })
 }
 
+/// Resolve `single_instance`/`window_app_id` for an action kind that supports
+/// them -- shared by "exec" and "givc-app", which both need the exact same
+/// validation: without a real `window_app_id` there is nothing to ask the
+/// compositor, so a `single_instance` set without one must not silently
+/// behave as if it were off. `kind` names the caller in the error string.
+///
+/// "exec" is not fundamentally different from "givc-app" here: both launch
+/// something that opens a toplevel, and the compositor check in
+/// `actions::bring_to_front_or_launch` is already Wayland-only, with nothing
+/// GIVC-specific in it. What made a plain `exec`'d process unable to support
+/// this before was never the action kind, only that most `exec` targets
+/// don't open a window at all -- one that does (`cosmic-settings`, for
+/// instance) can be raised exactly like a flatpak launcher.
+fn single_instance_for(raw: &RawAction, kind: &str) -> Result<Option<SingleInstance>, String> {
+    match (raw.single_instance, raw.window_app_id.as_ref()) {
+        (true, Some(window_app_id)) if !window_app_id.is_empty() => Ok(Some(SingleInstance {
+            window_app_id: window_app_id.clone(),
+        })),
+        // An empty string is not a real app_id -- no toplevel's app_id is
+        // ever "", so this would never match anything and single_instance
+        // would silently behave as if it were always off. Treated the same
+        // as the field being absent entirely rather than let it slip through
+        // as Some("").
+        (true, None) | (true, Some(_)) => Err(format!(
+            "action kind {kind:?} sets \"single_instance\" without \"window_app_id\", which is \
+             required to tell whether the window is already open"
+        )),
+        (false, _) => Ok(None),
+    }
+}
+
 impl Action {
     fn from_raw(raw: &RawAction) -> Self {
         match raw.kind.as_str() {
@@ -251,20 +289,13 @@ impl Action {
                         reason: "action kind \"exec\" has an empty argv".to_owned(),
                     };
                 }
-                // Like "givc-service": an exec'd process has no toplevel for
-                // the compositor to ask about, so nothing here could ever
-                // honour the flag. Rejecting it explicitly, rather than
-                // silently ignoring it, is what stops a typo'd config from
-                // looking like single-instance behaviour was configured when
-                // it was never possible to deliver.
-                if raw.single_instance {
-                    return Self::Unsupported {
-                        reason: "action kind \"exec\" does not support \"single_instance\""
-                            .to_owned(),
-                    };
-                }
+                let single_instance = match single_instance_for(raw, "exec") {
+                    Ok(si) => si,
+                    Err(reason) => return Self::Unsupported { reason },
+                };
                 Self::Exec {
                     argv: raw.argv.clone(),
+                    single_instance,
                 }
             }
             "givc-app" => {
@@ -287,32 +318,9 @@ impl Action {
                             .to_owned(),
                     };
                 }
-                // Without it there is nothing to ask the compositor -- see
-                // SingleInstance's own doc comment. Matched here, not
-                // unwrapped in a helper elsewhere: every other malformed
-                // config in this file degrades to Unsupported rather than
-                // panicking, and a `window_app_id` obtained any way other
-                // than this match arm proving it Some would be one too.
-                let single_instance = match (raw.single_instance, raw.window_app_id.as_ref()) {
-                    (true, Some(window_app_id)) if !window_app_id.is_empty() => {
-                        Some(SingleInstance {
-                            window_app_id: window_app_id.clone(),
-                        })
-                    }
-                    // An empty string is not a real app_id -- no toplevel's
-                    // app_id is ever "", so this would never match anything
-                    // and single_instance would silently behave as if it were
-                    // always off. Treated the same as the field being absent
-                    // entirely rather than let it slip through as Some("").
-                    (true, None) | (true, Some(_)) => {
-                        return Self::Unsupported {
-                            reason: "action kind \"givc-app\" sets \"single_instance\" without \
-                                     \"window_app_id\", which is required to tell whether the \
-                                     window is already open"
-                                .to_owned(),
-                        };
-                    }
-                    (false, _) => None,
+                let single_instance = match single_instance_for(raw, "givc-app") {
+                    Ok(si) => si,
+                    Err(reason) => return Self::Unsupported { reason },
                 };
                 let mut argv = raw.givc_cli.clone();
                 argv.extend(["start".to_owned(), "app".to_owned()]);
@@ -1142,15 +1150,34 @@ mod tests {
     }
 
     #[test]
-    fn an_exec_does_not_support_single_instance() {
-        // Same reasoning as givc-service: an exec'd process has no toplevel
-        // for the compositor to ask about.
+    fn an_exec_with_single_instance_needs_window_app_id() {
+        // Same reasoning as givc-app: without a real app_id there is nothing
+        // to ask the compositor.
         let k = parse(
             r#"{"version":1,"buttons":[{"id":"a","label":"A","action":{
                  "kind":"exec","argv":["true"],"single_instance":true}}]}"#,
         )
         .unwrap();
         assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+    }
+
+    #[test]
+    fn an_exec_can_be_a_singleton() {
+        // cosmic-settings opens a real, raisable window -- unlike a generic
+        // exec target, it is not inherently unable to support this.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"a","label":"A","action":{
+                 "kind":"exec","argv":["cosmic-settings","network"],
+                 "single_instance":true,"window_app_id":"com.system76.CosmicSettings"}}]}"#,
+        )
+        .unwrap();
+        let Action::Exec { single_instance, .. } = &k.buttons[0].action else {
+            panic!("expected an exec action");
+        };
+        assert_eq!(
+            single_instance.as_ref().unwrap().window_app_id,
+            "com.system76.CosmicSettings"
+        );
     }
 
     #[test]
