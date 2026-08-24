@@ -202,6 +202,7 @@ pub fn build<R>(
     monitor: (f64, f64),
     banner: &R,
     scrim: &gtk::Widget,
+    shared: &crate::shared::Shared,
 ) -> Fan
 where
     R: Reporter + Clone,
@@ -268,8 +269,9 @@ where
         let name = item.label.clone();
         let reporter = banner.clone();
         let trig = trigger.clone();
-        // Per member, so a slow one cannot block a different one.
-        let busy = actions::Busy::new();
+        // Per member id, not per output: shared.busy_for gives the SAME flag
+        // to this menu item on every screen. See Shared::busy_for.
+        let busy = shared.busy_for(&item.id);
         button.connect_clicked(move |_| {
             // Close FIRST, so a launched window never appears behind an open fan.
             trig.set_active(false);

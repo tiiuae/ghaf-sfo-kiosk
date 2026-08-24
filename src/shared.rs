@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 
-use crate::actions::Reporter;
+use crate::actions::{Busy, Reporter};
 use crate::banner::Banner;
 use crate::radial::Fan;
 
@@ -56,6 +56,13 @@ pub struct Shared {
     /// (menu id, fan). Fans with the SAME id live on different outputs and are
     /// kept in lockstep; different ids are different menus and are independent.
     fans: Rc<RefCell<Vec<(String, Fan)>>>,
+    /// (button id, busy). `ui::build`/`radial::build` run once per output, so
+    /// without this a two-screen kiosk gives the SAME logical button one
+    /// `Busy` per screen instead of one shared -- a press on screen B can then
+    /// race a launch already in flight from screen A, since neither screen's
+    /// flag knows about the other's. Keyed the same way `fans` is, for the
+    /// same reason: same id everywhere it appears, different ids independent.
+    busy: Rc<RefCell<Vec<(String, Busy)>>>,
 }
 
 impl Shared {
@@ -71,6 +78,22 @@ impl Shared {
 
     pub fn register_banner(&self, banner: Banner) {
         self.reporter.push(banner);
+    }
+
+    /// The one `Busy` flag for this button id, shared across every output.
+    /// The first output to ask for an id creates it; every later call for the
+    /// SAME id, on any output, gets back that same flag -- not a copy. Never
+    /// pruned: unlike a fan or a banner it holds no reference to a surface, and
+    /// the set of ids is bounded by the config, not by how many outputs have
+    /// ever existed.
+    pub fn busy_for(&self, button_id: &str) -> Busy {
+        let mut busy = self.busy.borrow_mut();
+        if let Some((_, b)) = busy.iter().find(|(id, _)| id == button_id) {
+            return b.clone();
+        }
+        let b = Busy::new();
+        busy.push((button_id.to_owned(), b.clone()));
+        b
     }
 
     /// Drop registrations whose surface has been destroyed.

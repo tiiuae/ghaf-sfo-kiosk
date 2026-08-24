@@ -50,6 +50,17 @@ const LAUNCH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 /// re-arms continuously whenever nothing higher-priority is pending, which
 /// pegs a core for the whole wait; a low-frequency timeout does not.
 const DELIVERY_POLL_INTERVAL: Duration = Duration::from_millis(25);
+/// How long `compute_then_deliver` waits for the background thread before
+/// giving up on it. A local Wayland roundtrip normally completes in well
+/// under this; it exists for the one case `connect_and_settle`'s own
+/// `attempts` cap does NOT cover -- a compositor that accepts the connection
+/// but then simply stops answering mid-roundtrip. `EventQueue::roundtrip` has
+/// no timeout of its own, so a stall there blocks the background thread
+/// forever, and `attempts` never gets the chance to run out because the very
+/// first stuck call never returns. Without this, that stall wedges the
+/// button for the rest of the session -- exactly the failure mode the
+/// `attempts` cap's own doc comment claims is already handled, but isn't.
+const COMPUTE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub enum Activation {
     /// A toplevel with exactly this `app_id` was found and `activate` sent.
@@ -76,6 +87,14 @@ pub enum Activation {
 /// `on_result`, via `on_disconnected`: every caller has a `Busy` flag waiting
 /// on this closing, and dropping it silently would wedge that button for the
 /// rest of the session.
+///
+/// A channel that stays merely EMPTY forever gets the same treatment once
+/// `COMPUTE_TIMEOUT` passes. `compute` is not cancellable -- it typically
+/// blocks inside `EventQueue::roundtrip`, which has no timeout of its own --
+/// so a background thread that hangs stays leaked for the life of the
+/// process. What this guards is the GTK thread: without a deadline here, the
+/// poll loop below waits on that leaked thread's result forever, and the
+/// `Busy` flag riding on `on_result` never clears.
 fn compute_then_deliver<T, F>(
     compute: impl FnOnce() -> T + Send + 'static,
     on_disconnected: impl FnOnce() -> T + 'static,
@@ -89,6 +108,7 @@ fn compute_then_deliver<T, F>(
         let _ = tx.send(compute());
     });
 
+    let deadline = Instant::now() + COMPUTE_TIMEOUT;
     let mut on_result = Some(on_result);
     let mut on_disconnected = Some(on_disconnected);
     glib::timeout_add_local(DELIVERY_POLL_INTERVAL, move || match rx.try_recv() {
@@ -98,7 +118,15 @@ fn compute_then_deliver<T, F>(
             }
             glib::ControlFlow::Break
         }
-        Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+        Err(std::sync::mpsc::TryRecvError::Empty) => {
+            if Instant::now() < deadline {
+                return glib::ControlFlow::Continue;
+            }
+            if let (Some(f), Some(default)) = (on_result.take(), on_disconnected.take()) {
+                f(default());
+            }
+            glib::ControlFlow::Break
+        }
         Err(std::sync::mpsc::TryRecvError::Disconnected) => {
             if let (Some(f), Some(default)) = (on_result.take(), on_disconnected.take()) {
                 f(default());
@@ -163,6 +191,12 @@ enum ToplevelStatus {
 struct AppData {
     toplevel_info: Option<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1>,
     toplevel_manager: Option<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1>,
+    /// Kept only to know whether the compositor advertised the protocol at
+    /// all -- nothing here ever calls a method on it. Without this,
+    /// `toplevels` stays empty both when the protocol is missing and when it
+    /// is present with genuinely nothing open, and those two are not the same
+    /// answer: the caller needs to tell "confirmed empty" from "never asked".
+    toplevel_list: Option<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1>,
     seat: Option<wl_seat::WlSeat>,
     toplevels: Vec<Toplevel>,
 }
@@ -246,11 +280,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppData {
                 );
             }
             "ext_foreign_toplevel_list_v1" => {
-                registry.bind::<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, _, _>(
-                    name,
-                    1,
-                    qh,
-                    (),
+                app_data.toplevel_list = Some(
+                    registry.bind::<ext_foreign_toplevel_list_v1::ExtForeignToplevelListV1, _, _>(
+                        name,
+                        1,
+                        qh,
+                        (),
+                    ),
                 );
             }
             "wl_seat" => {
@@ -376,9 +412,12 @@ impl Dispatch<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, ()> for App
 /// connects while the desktop happens to be quiet can wait on it forever.
 /// `ext_foreign_toplevel_handle_v1::done` fires whenever that one handle's
 /// own properties changed, which they always do on their first send, so it
-/// does not share that failure mode. The cap exists only so a genuinely
-/// broken or unresponsive compositor produces `Unavailable` instead of
-/// hanging.
+/// does not share that failure mode. The `attempts` cap only bounds a
+/// compositor that keeps answering but never settles -- it does NOT bound a
+/// compositor that stops answering mid-roundtrip, since `roundtrip` itself
+/// has no timeout and a stall there blocks before `attempts` can run out.
+/// That case is caught one layer up, by `compute_then_deliver`'s own
+/// wall-clock `COMPUTE_TIMEOUT` on the caller's side of this call.
 fn connect_and_settle(
     attempts: u32,
 ) -> Result<(Connection, wayland_client::EventQueue<AppData>, AppData), String> {
@@ -396,14 +435,23 @@ fn connect_and_settle(
             .map_err(|e| format!("Wayland roundtrip failed: {e}"))?;
         // Round 0 only sees the registry's globals and issues the binds;
         // nothing has requested toplevels yet, so an empty, "already
-        // settled" list here would be premature, not a real answer.
+        // settled" list here would be premature, not a real answer. Also
+        // requires toplevel_list itself: without it, `toplevels` stays empty
+        // forever not because nothing is open but because nothing was ever
+        // asked, and that must not be reported as a settled, trustworthy
+        // empty list -- it would read as "confirmed nothing running" to
+        // every caller, when the honest answer is "could not ask".
         let settled = round > 0
+            && app_data.toplevel_list.is_some()
             && app_data.toplevels.len() == last_count
             && app_data.toplevels.iter().all(|t| t.done);
         last_count = app_data.toplevels.len();
         if settled {
             return Ok((conn, event_queue, app_data));
         }
+    }
+    if app_data.toplevel_list.is_none() {
+        return Err("ext_foreign_toplevel_list_v1 not advertised".to_owned());
     }
     Err(format!(
         "toplevel list never settled after {attempts} roundtrips"
@@ -418,7 +466,14 @@ fn connect_and_settle(
 fn find_toplevel_status(app_id: &str) -> ToplevelStatus {
     let (_conn, _event_queue, app_data) = match connect_and_settle(10) {
         Ok(v) => v,
-        Err(_) => return ToplevelStatus::NotFound,
+        Err(e) => {
+            // Folded into NotFound by design -- see this function's own doc
+            // comment -- but the reason is worth keeping somewhere: a poll
+            // loop that always fails the same way should be diagnosable from
+            // the log instead of just watching a button retry forever.
+            log::debug!("find_toplevel_status({app_id}): {e}");
+            return ToplevelStatus::NotFound;
+        }
     };
     if app_data.toplevel_info.is_none() {
         return ToplevelStatus::NotFound;
