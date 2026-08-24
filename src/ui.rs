@@ -38,11 +38,7 @@ pub fn icon_image(icon: &str) -> gtk::Image {
 ///
 /// `monitor` is the output size in logical pixels; it sets the corner menus'
 /// fan radius -- see `radial::Geometry`.
-pub fn build(
-    kiosk: &Kiosk,
-    monitor: (f64, f64),
-    shared: &crate::shared::Shared,
-) -> gtk::Widget {
+pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared) -> gtk::Widget {
     // This output's own banner widget, registered so a message raised anywhere
     // is shown on every output. `reporter` -- NOT `banner` -- is what buttons
     // and menu items must report through; using the local banner directly is
