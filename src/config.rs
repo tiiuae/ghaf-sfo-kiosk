@@ -190,6 +190,20 @@ pub struct SingleInstance {
     /// See `RawAction::window_app_id`. Required: without it there is nothing
     /// to ask the compositor.
     pub window_app_id: String,
+    /// Whether `argv` itself exits quickly on its own, true only for
+    /// `givc-app` (`argv` is `givc-cli`, a proxy that returns as soon as the
+    /// unit is queued in flatpak-vm). False for `exec`, where `argv` IS the
+    /// application and does not exit until the operator closes it.
+    ///
+    /// `actions::launch_singleton` uses this to decide whether to wait for
+    /// `argv`'s own process to exit before polling the compositor for its
+    /// window, or to poll immediately: waiting first is free for a
+    /// quick-exiting proxy, but for a long-running `exec` target it would
+    /// mean the button's busy flag never clears while the window is merely
+    /// minimized -- not closed -- reintroducing the exact bug
+    /// `single_instance` exists to fix, one layer below the check that
+    /// raises an *existing* window.
+    pub argv_exits_quickly: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +280,9 @@ fn single_instance_for(raw: &RawAction, kind: &str) -> Result<Option<SingleInsta
     match (raw.single_instance, raw.window_app_id.as_ref()) {
         (true, Some(window_app_id)) if !window_app_id.is_empty() => Ok(Some(SingleInstance {
             window_app_id: window_app_id.clone(),
+            // Only "givc-app"'s argv is the short-lived givc-cli proxy --
+            // see the field's own doc comment.
+            argv_exits_quickly: kind == "givc-app",
         })),
         // An empty string is not a real app_id -- no toplevel's app_id is
         // ever "", so this would never match anything and single_instance

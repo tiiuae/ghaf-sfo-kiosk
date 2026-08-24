@@ -204,6 +204,7 @@ fn bring_to_front_or_launch<R: Reporter + Clone>(
 ) {
     busy.set(true);
     let app_id = si.window_app_id;
+    let argv_exits_quickly = si.argv_exits_quickly;
     toplevels::check_and_activate_async(app_id.clone(), move |result| {
         if should_launch(&result) {
             if let Activation::Unavailable(reason) = &result {
@@ -218,7 +219,7 @@ fn bring_to_front_or_launch<R: Reporter + Clone>(
             } else {
                 log::info!("button {label:?}: no matching window; launching");
             }
-            launch_singleton(argv, label, reporter, busy, app_id);
+            launch_singleton(argv, label, reporter, busy, app_id, argv_exits_quickly);
         } else {
             log::info!("button {label:?}: brought its window to the front");
             busy.set(false);
@@ -236,10 +237,9 @@ fn should_launch(result: &Activation) -> bool {
 
 /// A `single_instance` launcher's actual launch, once the compositor check
 /// found nothing to raise. Keeps `busy` set until the window it just started
-/// actually appears (or a grace period elapses) -- not merely until
-/// `givc-cli` exits, which only means the unit was queued in flatpak-vm, well
-/// before its surface is forwarded and mapped. Clearing `busy` at that
-/// earlier point reopens the exact bug `single_instance` exists to close: a
+/// actually appears (or a grace period elapses) -- not merely until `argv`
+/// exits, because what that means differs by action kind. Clearing `busy`
+/// too early reopens the exact bug `single_instance` exists to close: a
 /// second press in the gap sees no window either, via the same check, and
 /// starts a second copy -- reachable in the few seconds right after every
 /// single press, which is exactly when an operator is likely to press again
@@ -250,6 +250,7 @@ fn launch_singleton<R: Reporter + Clone>(
     reporter: R,
     busy: Busy,
     app_id: String,
+    argv_exits_quickly: bool,
 ) {
     log::info!("button {label:?}: exec {argv:?}");
     reporter.info(&format!("Starting {label}…"));
@@ -259,8 +260,11 @@ fn launch_singleton<R: Reporter + Clone>(
         return;
     };
 
-    proc.wait_check_async(gio::Cancellable::NONE, move |result| match result {
-        Ok(()) => {
+    let watch_window = {
+        let label = label.clone();
+        let busy = busy.clone();
+        let reporter = reporter.clone();
+        move || {
             log::info!("button {label:?}: child queued; waiting for its window");
             toplevels::wait_for_window_async(app_id, move |appeared| {
                 if appeared {
@@ -279,14 +283,40 @@ fn launch_singleton<R: Reporter + Clone>(
                 busy.set(false);
             });
         }
-        Err(e) => {
-            log::error!("button {label:?}: {e}");
-            let msg = e.to_string();
-            let brief: String = msg.chars().take(160).collect();
-            reporter.error(&format!("{label} failed: {brief}"));
-            busy.set(false);
-        }
-    });
+    };
+
+    if argv_exits_quickly {
+        // givc-app: argv is givc-cli, a proxy that exits once the unit is
+        // queued in flatpak-vm, well before its surface is forwarded and
+        // mapped -- waiting for it first is instant, and it is also the one
+        // chance to report a launch request that failed outright (e.g.
+        // flatpak-vm unreachable) before polling for a window that was never
+        // going to appear.
+        proc.wait_check_async(gio::Cancellable::NONE, move |result| match result {
+            Ok(()) => watch_window(),
+            Err(e) => {
+                log::error!("button {label:?}: {e}");
+                let msg = e.to_string();
+                let brief: String = msg.chars().take(160).collect();
+                reporter.error(&format!("{label} failed: {brief}"));
+                busy.set(false);
+            }
+        });
+    } else {
+        // exec: argv IS the application, and does not exit until the
+        // operator closes it -- waiting for that first would mean busy never
+        // clears while the window is merely minimized. Poll for the window
+        // immediately instead. Still watch the process, but only to log an
+        // unexpectedly early exit; it does not gate anything, since
+        // wait_for_window_async's own grace period is what unlocks the
+        // button if the window never appears at all.
+        proc.wait_check_async(gio::Cancellable::NONE, move |result| {
+            if let Err(e) = result {
+                log::warn!("button {label:?}: launch process exited abnormally: {e}");
+            }
+        });
+        watch_window();
+    }
 }
 
 /// Poll the GIVC registry until `job.app` is no longer listed, then say so.
