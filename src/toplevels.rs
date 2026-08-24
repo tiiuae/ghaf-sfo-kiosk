@@ -485,6 +485,14 @@ fn find_toplevel_status(app_id: &str) -> ToplevelStatus {
     {
         ToplevelStatus::Found
     } else {
+        log::debug!(
+            "find_toplevel_status({app_id}): settled with no match; saw {:?}",
+            app_data
+                .toplevels
+                .iter()
+                .map(|t| t.app_id.as_deref().unwrap_or("<none>"))
+                .collect::<Vec<_>>()
+        );
         ToplevelStatus::NotFound
     }
 }
@@ -520,6 +528,18 @@ fn activate_by_app_id(app_id: &str) -> Activation {
         .iter()
         .find(|t| t.app_id.as_deref() == Some(app_id))
     else {
+        // A settled connection reporting no match is not an error, so this
+        // stays at debug -- but a caller chasing a false "not found" needs to
+        // see what this connection actually saw, not just that it saw
+        // nothing matching.
+        log::debug!(
+            "activate_by_app_id({app_id}): settled with no match; saw {:?}",
+            app_data
+                .toplevels
+                .iter()
+                .map(|t| t.app_id.as_deref().unwrap_or("<none>"))
+                .collect::<Vec<_>>()
+        );
         return Activation::NotFound;
     };
 
