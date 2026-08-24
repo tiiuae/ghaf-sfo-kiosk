@@ -183,6 +183,10 @@ where
         LAUNCH_GRACE + COMPUTE_TIMEOUT,
         move |cancellable: &gio::Cancellable| {
             let deadline = Instant::now() + LAUNCH_GRACE;
+            // Logged once per *change*, not once per poll: a stuck
+            // connection fails the same way on every one of ~90 attempts,
+            // and that should read as one line, not fill the journal.
+            let mut last_reason: Option<String> = None;
             loop {
                 if cancellable.is_cancelled() {
                     return false;
@@ -190,6 +194,12 @@ where
                 match find_toplevel_status(&app_id) {
                     ToplevelStatus::Found => return true,
                     ToplevelStatus::NotFound => {}
+                    ToplevelStatus::Unavailable(reason) => {
+                        if last_reason.as_deref() != Some(reason.as_str()) {
+                            log::warn!("wait_for_window_async({app_id}): {reason}");
+                            last_reason = Some(reason);
+                        }
+                    }
                 }
                 if Instant::now() >= deadline {
                     return false;
@@ -205,9 +215,14 @@ where
 
 enum ToplevelStatus {
     Found,
-    /// Also covers "could not tell" -- `wait_for_window_async`'s poll loop
-    /// treats both alike, retrying regardless of which one it was.
     NotFound,
+    /// Could not even ask -- no compositor connection, or the protocol is
+    /// not advertised. `wait_for_window_async`'s poll loop retries on this
+    /// the same as `NotFound` (waiting cannot fix a connection failure any
+    /// more than it can conjure a window), but logs the reason once per
+    /// change so a poll that always fails the same way is diagnosable
+    /// instead of silently retrying for the full grace period.
+    Unavailable(String),
 }
 
 #[derive(Default)]
@@ -482,24 +497,21 @@ fn connect_and_settle(
 }
 
 /// Whether a toplevel with this exact `app_id` currently exists, without
-/// touching it. Used only by `wait_for_window_async`'s polling loop, which
-/// treats "could not tell" the same as "not found yet" -- see
-/// `ToplevelStatus::NotFound`'s own doc comment -- so a connection failure or
-/// a too-old compositor here is not distinguished from a genuine absence.
+/// touching it. Used only by `wait_for_window_async`'s polling loop -- see
+/// `ToplevelStatus::Unavailable`'s own doc comment for how it is treated
+/// there.
 fn find_toplevel_status(app_id: &str) -> ToplevelStatus {
     let (_conn, _event_queue, app_data) = match connect_and_settle(10) {
         Ok(v) => v,
         Err(e) => {
-            // Folded into NotFound by design -- see this function's own doc
-            // comment -- but the reason is worth keeping somewhere: a poll
-            // loop that always fails the same way should be diagnosable from
-            // the log instead of just watching a button retry forever.
             log::debug!("find_toplevel_status({app_id}): {e}");
-            return ToplevelStatus::NotFound;
+            return ToplevelStatus::Unavailable(e);
         }
     };
     if app_data.toplevel_info.is_none() {
-        return ToplevelStatus::NotFound;
+        let reason = "zcosmic_toplevel_info_v1 not advertised at version 2 or higher".to_owned();
+        log::debug!("find_toplevel_status({app_id}): {reason}");
+        return ToplevelStatus::Unavailable(reason);
     }
     if app_data
         .toplevels
@@ -572,7 +584,13 @@ fn activate_by_app_id(app_id: &str) -> Activation {
     manager.unset_minimized(&toplevel.cosmic);
     manager.activate(&toplevel.cosmic, seat);
     if let Err(e) = event_queue.roundtrip(&mut app_data) {
-        return Activation::Unavailable(format!("activate did not flush: {e}"));
+        // The toplevel WAS found and both requests were already queued on
+        // the socket -- unlike every other Unavailable case, this one has
+        // positive evidence the window exists. Reporting it as "could not
+        // check" would make the caller fail open into launching a duplicate
+        // on top of a raise that most likely did land. Treat it as done.
+        log::warn!("activate_by_app_id({app_id}): activate did not flush: {e}");
+        return Activation::Activated;
     }
     Activation::Activated
 }

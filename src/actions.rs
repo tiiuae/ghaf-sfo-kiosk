@@ -263,15 +263,22 @@ fn launch_singleton<R: Reporter + Clone>(
         return;
     };
 
+    // Set once the window is confirmed on screen, so a process exit AFTER
+    // that point (the operator closing the app, possibly hours later) is
+    // never mistaken for a launch failure -- see the `exec` branch below.
+    let window_appeared = std::rc::Rc::new(std::cell::Cell::new(false));
+
     let watch_window = {
         let label = label.clone();
         let busy = busy.clone();
         let reporter = reporter.clone();
+        let window_appeared = window_appeared.clone();
         move || {
             log::info!("button {label:?}: child queued; waiting for its window");
             toplevels::wait_for_window_async(app_id, move |appeared| {
                 if appeared {
                     log::info!("button {label:?}: window appeared");
+                    window_appeared.set(true);
                 } else {
                     log::warn!(
                         "button {label:?}: no window appeared within the grace period; \
@@ -309,13 +316,26 @@ fn launch_singleton<R: Reporter + Clone>(
         // exec: argv IS the application, and does not exit until the
         // operator closes it -- waiting for that first would mean busy never
         // clears while the window is merely minimized. Poll for the window
-        // immediately instead. Still watch the process, but only to log an
-        // unexpectedly early exit; it does not gate anything, since
-        // wait_for_window_async's own grace period is what unlocks the
-        // button if the window never appears at all.
-        proc.wait_check_async(gio::Cancellable::NONE, move |result| {
-            if let Err(e) = result {
+        // immediately instead. The process is still watched, but a failure
+        // is only reported if the window never appeared: after that point a
+        // nonzero exit is just the operator closing the app, not a launch
+        // failure, and reporting it hours later would be a lie about what
+        // just happened.
+        proc.wait_check_async(gio::Cancellable::NONE, {
+            let label = label.clone();
+            let reporter = reporter.clone();
+            let window_appeared = window_appeared.clone();
+            move |result| {
+                let Err(e) = result else {
+                    return;
+                };
                 log::warn!("button {label:?}: launch process exited abnormally: {e}");
+                if window_appeared.get() {
+                    return;
+                }
+                let msg = e.to_string();
+                let brief: String = msg.chars().take(160).collect();
+                reporter.error(&format!("{label} failed to start: {brief}"));
             }
         });
         watch_window();
