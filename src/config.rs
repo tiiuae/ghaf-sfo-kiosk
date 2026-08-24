@@ -1117,20 +1117,34 @@ mod tests {
                  "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli","--name","admin-vm"]}}]}"#,
         )
         .unwrap();
-        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+        let Action::Unsupported { reason } = &k.buttons[0].action else {
+            panic!("expected Unsupported");
+        };
+        assert!(reason.contains("window_app_id"), "got: {reason}");
     }
 
     #[test]
     fn a_launcher_cannot_be_both_awaited_and_a_singleton() {
         // One is for a job that ends, the other for one that does not.
+        // window_app_id is set so this fails ONLY for that reason -- without
+        // it, single_instance_for would reject the button first, and this
+        // test would keep passing even if the awaitCompletion/singleInstance
+        // guard were deleted.
         let k = parse(
             r#"{"version":1,"buttons":[{"id":"l","label":"L","action":{
                  "kind":"givc-app","vm":"flatpak-vm","app":"run-flatpak-app",
                  "await_completion":true,"single_instance":true,
+                 "window_app_id":"X",
                  "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
         )
         .unwrap();
-        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+        let Action::Unsupported { reason } = &k.buttons[0].action else {
+            panic!("expected Unsupported");
+        };
+        assert!(
+            reason.contains("await_completion") && reason.contains("single_instance"),
+            "got: {reason}"
+        );
     }
 
     #[test]
@@ -1148,10 +1162,12 @@ mod tests {
         else {
             panic!("expected a givc action");
         };
-        assert_eq!(
-            single_instance.as_ref().unwrap().window_app_id,
-            "BARQ Ground Control Station"
-        );
+        let si = single_instance.as_ref().unwrap();
+        assert_eq!(si.window_app_id, "BARQ Ground Control Station");
+        // givc-app's argv is givc-cli, a proxy that exits once queued --
+        // this is the one field distinguishing it from exec's own launcher,
+        // and it was completely uncovered before this assertion existed.
+        assert!(si.argv_exits_quickly);
     }
 
     #[test]
@@ -1164,7 +1180,10 @@ mod tests {
                  "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
         )
         .unwrap();
-        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+        let Action::Unsupported { reason } = &k.buttons[0].action else {
+            panic!("expected Unsupported");
+        };
+        assert!(reason.contains("single_instance"), "got: {reason}");
     }
 
     #[test]
@@ -1176,7 +1195,10 @@ mod tests {
                  "kind":"exec","argv":["true"],"single_instance":true}}]}"#,
         )
         .unwrap();
-        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+        let Action::Unsupported { reason } = &k.buttons[0].action else {
+            panic!("expected Unsupported");
+        };
+        assert!(reason.contains("window_app_id"), "got: {reason}");
     }
 
     #[test]
@@ -1195,10 +1217,12 @@ mod tests {
         else {
             panic!("expected an exec action");
         };
-        assert_eq!(
-            single_instance.as_ref().unwrap().window_app_id,
-            "com.system76.CosmicSettings"
-        );
+        let si = single_instance.as_ref().unwrap();
+        assert_eq!(si.window_app_id, "com.system76.CosmicSettings");
+        // exec's argv IS the application -- it never exits until the
+        // operator closes it. This is the field that distinguishes it from
+        // givc-app and was completely uncovered before this assertion.
+        assert!(!si.argv_exits_quickly);
     }
 
     #[test]
@@ -1212,6 +1236,9 @@ mod tests {
                  "givc_cli":["/nix/store/x-givc-cli/bin/givc-cli"]}}]}"#,
         )
         .unwrap();
-        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
+        let Action::Unsupported { reason } = &k.buttons[0].action else {
+            panic!("expected Unsupported");
+        };
+        assert!(reason.contains("window_app_id"), "got: {reason}");
     }
 }

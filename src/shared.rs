@@ -136,3 +136,30 @@ impl Shared {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Shared;
+
+    #[test]
+    fn the_same_button_id_shares_one_busy_flag() {
+        let shared = Shared::new();
+        let a = shared.busy_for("plan");
+        let b = shared.busy_for("plan");
+        a.set(true);
+        assert!(b.get(), "same id on two calls must be the same flag");
+    }
+
+    #[test]
+    fn different_button_ids_get_independent_flags() {
+        let shared = Shared::new();
+        let plan = shared.busy_for("plan");
+        let launch = shared.busy_for("launch");
+        plan.set(true);
+        assert!(
+            !launch.get(),
+            "different ids must not share a flag -- this is the exact dual-screen \
+             race busy_for was added to close"
+        );
+    }
+}

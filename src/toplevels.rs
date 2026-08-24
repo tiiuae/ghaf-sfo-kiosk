@@ -594,3 +594,60 @@ fn activate_by_app_id(app_id: &str) -> Activation {
     }
     Activation::Activated
 }
+
+#[cfg(test)]
+mod tests {
+    use super::compute_then_deliver;
+    use gtk::gio;
+    use gtk::glib;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    use std::time::{Duration, Instant};
+
+    /// The exact scenario Brian's review blocker was: a `compute` that
+    /// legitimately runs longer than its caller's own deadline, on a
+    /// `compute_then_deliver` whose deadline used to be one constant shared
+    /// by every caller regardless of what that caller actually needed. This
+    /// pins that `timeout` is now honoured per call, not silently overridden.
+    #[test]
+    fn an_abandoned_compute_delivers_the_disconnected_default_after_its_deadline() {
+        let _guard = crate::GLOBAL_MAIN_CONTEXT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+        let result_for_callback = result.clone();
+
+        compute_then_deliver(
+            Duration::from_millis(50),
+            |_cancellable: &gio::Cancellable| {
+                // Never sends -- simulates a wedged roundtrip. This thread
+                // leaks for the life of the test process, the same
+                // trade-off `compute_then_deliver`'s own doc comment
+                // already accepts for a genuinely stuck `compute`.
+                loop {
+                    std::thread::sleep(Duration::from_secs(3600));
+                }
+            },
+            || "disconnected default".to_owned(),
+            move |value| {
+                *result_for_callback.borrow_mut() = Some(value);
+            },
+        );
+
+        // Drive the process's shared default `MainContext` directly, not a
+        // `MainLoop` of our own: `glib::timeout_add_local` (what
+        // `compute_then_deliver` uses internally) always posts to
+        // `MainContext::default()` regardless of any thread-default that
+        // might be pushed, so an isolated context here would never see the
+        // source fire at all. Bounded by wall clock rather than a glib
+        // timeout source, since a broken deadline is exactly the failure
+        // this test exists to catch.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while result.borrow().is_none() && Instant::now() < deadline {
+            glib::MainContext::default().iteration(true);
+        }
+
+        assert_eq!(result.borrow().as_deref(), Some("disconnected default"));
+    }
+}

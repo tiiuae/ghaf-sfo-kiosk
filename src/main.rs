@@ -23,6 +23,17 @@ mod ui;
 use clap::Parser;
 use gtk::prelude::*;
 
+/// Serializes any test that pumps `glib::MainContext::default()`.
+///
+/// `glib::timeout_add_local` always posts to that one context, process-wide,
+/// with no way to give it an isolated one -- so two tests that both drive it
+/// concurrently (`cargo test` runs tests on separate threads) can race
+/// `g_main_context_acquire` and panic with "already acquired by another
+/// thread". Poisoning is ignored: one test panicking for an unrelated reason
+/// must not cascade-fail the other lock holder.
+#[cfg(test)]
+pub(crate) static GLOBAL_MAIN_CONTEXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Exit code used when the compositor will not give us layer-shell. Distinct
 /// from a generic failure so the unit's status is self-explanatory.
 const EXIT_NO_LAYER_SHELL: i32 = 3;
