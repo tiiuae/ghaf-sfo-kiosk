@@ -21,12 +21,14 @@
 // `ext_workspace_enter`/`ext_workspace_leave`: those genuinely can never
 // reach a v2-bound client. Either way nothing here is dead by protocol
 // mechanics alone -- toplevels.rs's Dispatch impl for
-// zcosmic_toplevel_handle_v1 discards every event outright (the whole event
-// parameter is bound to `_`, not matched at all), and its
-// ext_foreign_toplevel_handle_v1 counterpart discards the ones it doesn't
-// use, workspace ones included, via a catch-all `_ => {}` arm -- either way
-// the type still has to exist for the generated code to compile but nothing
-// in this crate ever reads it.
+// zcosmic_toplevel_handle_v1 (the interface workspace_enter/workspace_leave
+// are declared on) discards every event outright, workspace ones included:
+// the whole event parameter is bound to `_`, not matched at all. Its
+// ext_foreign_toplevel_handle_v1 counterpart is a different interface with
+// no workspace events of its own; it discards only the real, non-workspace
+// events it doesn't use, via a catch-all `_ => {}` arm. Either way the type
+// still has to exist for the generated code to compile but nothing in this
+// crate ever reads it.
 // Trimming them out of the vendored XML instead is NOT safe: Wayland opcodes
 // are assigned by an event's *position* in the file, not an explicit id, so
 // deleting one from the middle would silently renumber every event after it

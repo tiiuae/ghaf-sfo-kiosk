@@ -87,15 +87,17 @@ pub enum Activation {
 /// thread, and forcing those types to be thread-safe just to satisfy a
 /// callback signature would be the wrong fix. Only `compute` runs on the
 /// background thread; its result (required to be `Send`) crosses back over an
-/// ordinary channel. `compute` gets a `&gio::Cancellable`, already cancelled
-/// by the time `on_disconnected` fires, so a `compute` that checks it between
-/// steps of its own can stop early instead of running out its full duration
-/// after the caller has already moved on -- see `wait_for_window_async`.
+/// ordinary channel. `compute` gets a `&gio::Cancellable`, and the same
+/// `Cancellable` is returned to the caller: on the timeout path below it is
+/// cancelled automatically once `timeout` passes, but a caller with its own,
+/// earlier reason to give up (see `wait_for_window_async`'s use of this) can
+/// cancel it sooner than that. On `TryRecvError::Disconnected` -- `compute`
+/// panicked before sending -- it is never cancelled at all, since there is no
+/// longer a thread on the other end to receive the signal.
 ///
-/// A disconnected channel -- `compute` panicked before sending -- still calls
-/// `on_result`, via `on_disconnected`: every caller has a `Busy` flag waiting
-/// on this closing, and dropping it silently would wedge that button for the
-/// rest of the session.
+/// A disconnected channel still calls `on_result`, via `on_disconnected`:
+/// every caller has a `Busy` flag waiting on this closing, and dropping it
+/// silently would wedge that button for the rest of the session.
 ///
 /// A channel that stays merely EMPTY forever gets the same treatment once
 /// `timeout` passes -- a caller-supplied deadline, not one constant shared by
@@ -110,7 +112,8 @@ fn compute_then_deliver<T, F>(
     compute: impl FnOnce(&gio::Cancellable) -> T + Send + 'static,
     on_disconnected: impl FnOnce() -> T + 'static,
     on_result: F,
-) where
+) -> gio::Cancellable
+where
     T: Send + 'static,
     F: FnOnce(T) + 'static,
 {
@@ -124,6 +127,7 @@ fn compute_then_deliver<T, F>(
     let deadline = Instant::now() + timeout;
     let mut on_result = Some(on_result);
     let mut on_disconnected = Some(on_disconnected);
+    let cancellable_for_poll = cancellable.clone();
     glib::timeout_add_local(DELIVERY_POLL_INTERVAL, move || match rx.try_recv() {
         Ok(value) => {
             if let Some(f) = on_result.take() {
@@ -135,7 +139,7 @@ fn compute_then_deliver<T, F>(
             if Instant::now() < deadline {
                 return glib::ControlFlow::Continue;
             }
-            cancellable.cancel();
+            cancellable_for_poll.cancel();
             if let (Some(f), Some(default)) = (on_result.take(), on_disconnected.take()) {
                 f(default());
             }
@@ -148,6 +152,7 @@ fn compute_then_deliver<T, F>(
             glib::ControlFlow::Break
         }
     });
+    cancellable
 }
 
 /// Ask cosmic-comp whether a toplevel with this exact `app_id` exists and, if
@@ -171,7 +176,13 @@ where
 /// queued the launch" and "the window actually exists" -- during which the
 /// old unit-number check would already see the app as running, but the
 /// compositor genuinely has nothing to raise yet.
-pub fn wait_for_window_async<F>(app_id: String, on_result: F)
+///
+/// Returns the poll's own `Cancellable`: a caller with an earlier, positive
+/// signal that no window is coming (an `exec` target's own process exiting
+/// abnormally, say -- see `launch_singleton`) can cancel it directly instead
+/// of leaving the poll to keep hammering the compositor for the rest of
+/// `LAUNCH_GRACE` only to reach the same conclusion more slowly.
+pub fn wait_for_window_async<F>(app_id: String, on_result: F) -> gio::Cancellable
 where
     F: FnOnce(bool) + 'static,
 {
@@ -211,7 +222,7 @@ where
         // Couldn't tell -- stop waiting rather than lock the button forever.
         || false,
         on_result,
-    );
+    )
 }
 
 enum ToplevelStatus {
@@ -219,10 +230,11 @@ enum ToplevelStatus {
     NotFound,
     /// Could not even ask -- no compositor connection, or the protocol is
     /// not advertised. `wait_for_window_async`'s poll loop retries on this
-    /// the same as `NotFound` (waiting cannot fix a connection failure any
-    /// more than it can conjure a window), but logs the reason once per
-    /// change so a poll that always fails the same way is diagnosable
-    /// instead of silently retrying for the full grace period.
+    /// the same as `NotFound`, since the failure may be transient -- a
+    /// momentarily busy compositor, a connection hiccup -- and clear before
+    /// the grace period ends; but logs the reason once per change so a poll
+    /// that always fails the same way is diagnosable instead of silently
+    /// retrying for the full grace period.
     Unavailable(String),
 }
 
@@ -294,11 +306,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppData {
         match &*interface {
             // get_cosmic_toplevel needs version 2 (the `done` event this
             // code actually waits on is ext_foreign_toplevel_handle_v1::done,
-            // v1 -- see connect_and_settle). Binding higher than the
-            // compositor advertises is a protocol error that kills the
-            // connection outright, so clamp to what it actually offers --
-            // and skip entirely below that, leaving `toplevel_info` None,
-            // which the caller already treats as Unavailable.
+            // v1 -- see connect_and_settle). The `version >= 2` guard is what
+            // keeps this arm from ever binding below what's needed; below it,
+            // skip entirely, leaving `toplevel_info` None, which the caller
+            // already treats as Unavailable. `version.min(2)` caps how high
+            // this binds, separately: within this guard it is always exactly
+            // 2, since binding a version this code has no handling for would
+            // be just as unsafe as binding one the compositor doesn't
+            // support -- it deliberately never asks for more than it
+            // understands, even from a compositor offering more.
             "zcosmic_toplevel_info_v1" if version >= 2 => {
                 app_data.toplevel_info = Some(
                     registry.bind::<zcosmic_toplevel_info_v1::ZcosmicToplevelInfoV1, _, _>(
@@ -457,7 +473,9 @@ impl Dispatch<zcosmic_toplevel_manager_v1::ZcosmicToplevelManagerV1, ()> for App
 /// compositor that stops answering mid-roundtrip, since `roundtrip` itself
 /// has no timeout and a stall there blocks before `attempts` can run out.
 /// That case is caught one layer up, by `compute_then_deliver`'s own
-/// wall-clock `COMPUTE_TIMEOUT` on the caller's side of this call.
+/// wall-clock deadline on the caller's side of this call -- a value each
+/// caller sets for itself, not one constant shared by every caller; see
+/// `compute_then_deliver`.
 fn connect_and_settle(
     attempts: u32,
 ) -> Result<(Connection, wayland_client::EventQueue<AppData>, AppData), String> {
@@ -652,9 +670,18 @@ mod tests {
         // source fire at all. Bounded by wall clock rather than a glib
         // timeout source, since a broken deadline is exactly the failure
         // this test exists to catch.
+        //
+        // iteration(false), not iteration(true): the latter blocks until a
+        // source is ready, so the deadline above would only ever be checked
+        // between iterations, never during one -- harmless today, but one
+        // refactor away from turning a test failure into a CI hang if a
+        // future change ever leaves the default context with nothing
+        // pending. Non-blocking plus a short sleep keeps the deadline
+        // authoritative regardless.
         let deadline = Instant::now() + Duration::from_secs(5);
         while result.borrow().is_none() && Instant::now() < deadline {
-            glib::MainContext::default().iteration(true);
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(Duration::from_millis(10));
         }
 
         assert_eq!(result.borrow().as_deref(), Some("disconnected default"));
