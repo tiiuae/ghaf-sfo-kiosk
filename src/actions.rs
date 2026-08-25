@@ -5,7 +5,7 @@
 // the journal with the full argv. A kiosk that silently does nothing leaves the
 // operator with no desktop, launcher or terminal to diagnose from.
 //
-// Plain (non-singleton) buttons never wait for the child or impose a timeout:
+// Plain (non-singleton) buttons never block on the child, and never kill it:
 // an `exec` action runs the application itself, and `cosmic-settings network`
 // exits when the operator closes the window, possibly an hour later. Spawn,
 // report a non-zero exit, otherwise stay quiet. stdout/stderr are inherited so
@@ -16,6 +16,7 @@
 // elapses), not merely until the process exits -- see its own doc comment.
 
 use gtk::gio;
+use gtk::gio::prelude::CancellableExt;
 use gtk::glib;
 
 use crate::config::{Action, AwaitJob, SingleInstance};
@@ -38,12 +39,16 @@ pub trait Reporter: 'static {
 ///
 /// Without it every press spawns another process, and for a button whose child
 /// IS a window that is one window per press -- three stacked cosmic-applet-power
-/// windows was the report that prompted this. Cleared when the child exits (or,
-/// for a `single_instance` button whose argv does NOT exit quickly -- an `exec`
-/// action IS the application -- once its window actually appears; see
-/// `launch_singleton`), or for an awaited GIVC action when the job leaves the
-/// registry, so a second press cannot re-queue an install that is still
-/// running.
+/// windows was the report that prompted this. Cleared when the child exits, or
+/// for an awaited GIVC action when the job leaves the registry, so a second
+/// press cannot re-queue an install that is still running. For a
+/// `single_instance` button this is different again: normally both of its
+/// kinds clear on the same event, once the window it started actually appears
+/// (or a grace period elapses) -- `argv_exits_quickly` only changes *when*
+/// that wait starts, not what ends it. The one exception is an `exec` target
+/// crashing before its window ever appears, which unlocks within about one
+/// poll interval instead of waiting out the full grace period, since the
+/// crash is itself proof nothing is coming; see `launch_singleton`.
 ///
 /// For a `single_instance` button this also covers the compositor check
 /// itself: that check is asynchronous too (a background thread, see
@@ -271,6 +276,14 @@ fn should_launch(result: &Activation) -> bool {
 /// starts a second copy -- reachable in the few seconds right after every
 /// single press, which is exactly when an operator is likely to press again
 /// because nothing is on screen yet.
+///
+/// Exception: an `exec` target that crashes before its window ever appears
+/// cancels the still-running poll instead of waiting out the grace period,
+/// unlocking within about one poll interval rather than up to `LAUNCH_GRACE`
+/// later -- the process's own exit is proof positive nothing is coming, so
+/// there is nothing left for that poll to usefully wait for, or for the
+/// compositor to keep being asked about. See `crash_reported` and
+/// `poll_cancellable` below.
 fn launch_singleton<R: Reporter + Clone>(
     argv: Vec<String>,
     label: String,
@@ -292,17 +305,47 @@ fn launch_singleton<R: Reporter + Clone>(
     // never mistaken for a launch failure -- see the `exec` branch below.
     let window_appeared = std::rc::Rc::new(std::cell::Cell::new(false));
 
+    // Holds wait_for_window_async's own Cancellable once watch_window has
+    // actually called it. Lets the exec branch's own process-exit watcher,
+    // below, cancel the still-running poll the moment a crash is positive
+    // proof no window is coming, instead of waiting out the full
+    // LAUNCH_GRACE for the poll to notice on its own.
+    let poll_cancellable: std::rc::Rc<std::cell::RefCell<Option<gio::Cancellable>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(None));
+
+    // Set once the exec branch's own process-exit watcher (below) has
+    // already reported a crash-before-window-appeared error directly to the
+    // operator and cancelled the poll. Read by watch_window's own "no
+    // window appeared" branch so a now-redundant "taking a while" banner
+    // does not land on top of a specific error the operator already saw.
+    // Stays false for the entire argv_exits_quickly path -- that branch's
+    // own failure case is handled completely by its own Err arm and never
+    // touches this flag.
+    let crash_reported = std::rc::Rc::new(std::cell::Cell::new(false));
+
     let watch_window = {
         let label = label.clone();
         let busy = busy.clone();
         let reporter = reporter.clone();
         let window_appeared = window_appeared.clone();
+        let crash_reported = crash_reported.clone();
+        let poll_cancellable = poll_cancellable.clone();
         move || {
             log::info!("button {label:?}: child queued; waiting for its window");
-            toplevels::wait_for_window_async(app_id, move |appeared| {
+            let cancellable = toplevels::wait_for_window_async(app_id, move |appeared| {
                 if appeared {
                     log::info!("button {label:?}: window appeared");
                     window_appeared.set(true);
+                } else if crash_reported.get() {
+                    // The exec branch's own process-exit watcher already
+                    // reported a specific crash error the moment the
+                    // process died, and cancelled this poll then -- this
+                    // generic timeout banner would only replace that with
+                    // something vaguer.
+                    log::info!(
+                        "button {label:?}: no window appeared, but its crash was already \
+                         reported; not repeating"
+                    );
                 } else {
                     log::warn!(
                         "button {label:?}: no window appeared within the grace period; \
@@ -314,8 +357,13 @@ fn launch_singleton<R: Reporter + Clone>(
                     // in progress forever.
                     reporter.info(&format!("{label} is taking a while — check the logs"));
                 }
+                // Idempotent: the exec branch's own watcher, below, may
+                // already have cleared this the moment it detected the
+                // crash, well before this grace-period poll gives up on its
+                // own.
                 busy.set(false);
             });
+            *poll_cancellable.borrow_mut() = Some(cancellable);
         }
     };
 
@@ -349,6 +397,8 @@ fn launch_singleton<R: Reporter + Clone>(
             let label = label.clone();
             let reporter = reporter.clone();
             let window_appeared = window_appeared.clone();
+            let crash_reported = crash_reported.clone();
+            let poll_cancellable = poll_cancellable.clone();
             move |result| {
                 let Err(e) = result else {
                     return;
@@ -360,6 +410,19 @@ fn launch_singleton<R: Reporter + Clone>(
                 let msg = e.to_string();
                 let brief: String = msg.chars().take(160).collect();
                 reporter.error(&format!("{label} failed to start: {brief}"));
+                // The true outcome is already known -- cancel the
+                // still-running poll rather than leaving it to hammer the
+                // compositor for the rest of LAUNCH_GRACE only to arrive at
+                // the same conclusion, more slowly and less precisely.
+                // Deliberately NOT clearing `busy` here too: leaving that to
+                // the poll's own (now fast, thanks to cancellation) delivery
+                // keeps exactly one place on this path that clears it, so a
+                // caller waiting on the flag and a background source waiting
+                // to be cleaned up can never observe one without the other.
+                crash_reported.set(true);
+                if let Some(c) = poll_cancellable.borrow().as_ref() {
+                    c.cancel();
+                }
             }
         });
         watch_window();
@@ -512,6 +575,12 @@ mod tests {
         };
         dispatch(&action, "Test", &reporter, &busy);
         assert!(busy.get());
+        assert!(
+            reporter.messages().is_empty(),
+            "the single_instance path must not report anything before the async compositor \
+             check resolves -- unlike spawn_and_track, which always posts \"Starting…\" \
+             synchronously regardless of whether the argv exists"
+        );
 
         // Drain the pending check before returning. compute_then_deliver's
         // glib::timeout_add_local always posts to the process's one shared
@@ -519,9 +588,18 @@ mod tests {
         // so an abandoned call here would sit armed on that context
         // forever, ready to fire into this test's already-dropped state the
         // next time ANY test -- possibly much later -- happens to pump it.
+        //
+        // iteration(false), not iteration(true): the latter blocks until a
+        // source is ready, so the deadline below would only ever be checked
+        // between iterations, never during one -- harmless today, but one
+        // refactor away from turning a test failure into a CI hang if a
+        // future change ever leaves the default context with nothing
+        // pending. Non-blocking plus a short sleep keeps the deadline
+        // authoritative regardless.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while busy.get() && std::time::Instant::now() < deadline {
-            glib::MainContext::default().iteration(true);
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(
             !busy.get(),
@@ -540,5 +618,76 @@ mod tests {
         dispatch(&action, "Test", &reporter, &busy);
         assert!(!busy.get());
         assert!(reporter.messages().iter().any(|m| m.starts_with("error:")));
+    }
+
+    #[test]
+    fn a_busy_singleton_says_it_is_still_starting() {
+        let reporter = FakeReporter::default();
+        let busy = Busy::new();
+        busy.set(true);
+        let action = Action::Givc {
+            argv: vec!["/nonexistent/givc-cli".to_owned()],
+            target: "test".to_owned(),
+            await_job: None,
+            single_instance: Some(SingleInstance {
+                window_app_id: "nothing.matches".to_owned(),
+                argv_exits_quickly: true,
+            }),
+        };
+        dispatch(&action, "Test", &reporter, &busy);
+        assert_eq!(
+            reporter.messages(),
+            vec!["info: Test is still starting…".to_owned()],
+            "a single_instance button's busy window never overlaps with its window being \
+             open and idle, so \"is already open\" would be wrong here"
+        );
+    }
+
+    #[test]
+    fn a_crashed_exec_singleton_unlocks_fast_without_a_stale_banner() {
+        let _guard = crate::GLOBAL_MAIN_CONTEXT_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        let reporter = FakeReporter::default();
+        let busy = Busy::new();
+        let action = Action::Exec {
+            argv: vec!["false".to_owned()],
+            single_instance: Some(SingleInstance {
+                window_app_id: "test.nonexistent.window".to_owned(),
+                argv_exits_quickly: false,
+            }),
+        };
+        dispatch(&action, "Test", &reporter, &busy);
+
+        // Bounded by wall clock, not by the abandoned wait_for_window_async
+        // poll's own eventual result -- 5s is generous headroom over the
+        // ~1 poll tick (LAUNCH_POLL_INTERVAL, 500ms) this should actually
+        // take once cancelled; the old, buggy behaviour would still be
+        // locked at this point, since only the 45s grace period cleared it.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while busy.get() && std::time::Instant::now() < deadline {
+            glib::MainContext::default().iteration(false);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(!busy.get(), "must unlock well before the 45s grace period");
+        assert!(
+            reporter
+                .messages()
+                .iter()
+                .any(|m| m.contains("failed to start")),
+            "got: {:?}",
+            reporter.messages()
+        );
+        assert!(
+            !reporter
+                .messages()
+                .iter()
+                .any(|m| m.contains("taking a while")),
+            "the specific crash error must not be clobbered by the generic timeout banner; \
+             got: {:?}",
+            reporter.messages()
+        );
     }
 }

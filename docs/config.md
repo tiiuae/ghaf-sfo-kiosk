@@ -225,10 +225,11 @@ setting `single_instance` on a target that never does isn't just a quietly wrong
 compositor check never finds a match, so every press locks the button for the full launch-grace
 period (currently 45s) waiting for a window that will never appear, then unlocks with a "taking a
 while" banner — on every single press, not just the first. `exec`/`givc-app` missing `window_app_id`
-are rejected outright at parse time (see below), and so is `givc-service`, because a systemd unit
-definitively has no toplevel to raise, ever. `menu` is different again: `single_instance` on a menu
-trigger is silently ignored rather than rejected, since a trigger's own action is never resolved
-through this same validation path at all.
+resolve to `Unsupported` at parse time (see below — parsing itself still succeeds, the button just
+renders dimmed), and so does `givc-service`, because a systemd unit definitively has no toplevel to
+raise, ever. `menu` is different again: `single_instance` on a menu trigger is silently ignored
+rather than rejected, since the `"menu"` kind is resolved through this same function but never reads
+`single_instance` at all for that one match arm.
 
 `window_app_id` is **required** whenever `single_instance` is set, and matched exactly, not as a
 substring. It is not derivable from `app`/`args`/`argv` — a Wayland `app_id` is set by the
