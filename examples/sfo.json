@@ -48,6 +48,10 @@
       "label": "Clear",
       "icon": "edit-clear-all-symbolic",
       "description": "Delete working files",
+      "confirm": {
+        "message": "Delete all mission working files?",
+        "detail": "Plans and the Mission Planner autosave will be permanently removed."
+      },
       "action": {
         "kind": "givc-service",
         "vm": "flatpak-vm",

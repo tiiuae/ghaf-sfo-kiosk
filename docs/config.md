@@ -54,12 +54,48 @@ binary, so every real button simply stays in the grid.
   "description": "Mission planning",  // tooltip, optional
   "icon": "map-symbolic",             // theme name, or an absolute path
   "menu": "settings",                 // optional; see "Menus" below
+  "confirm": { ... },                 // optional; see "Asking first" below
   "action": { ... }
 }
 ```
 
 Order comes from the nix module, which sorts before writing; the array order here is the display
 order.
+
+### `confirm` — asking first
+
+A button that cannot be undone should not act on the press. `confirm` puts a card in front of it:
+
+```jsonc
+"confirm": {
+  "message": "Delete all mission working files?",   // the question
+  "detail": "Plans and the Mission Planner autosave will be permanently removed.",  // optional
+  "confirm_label": "Yes",             // optional, defaults to "Yes"
+  "cancel_label": "Cancel"            // optional, defaults to "Cancel"
+}
+```
+
+Absent — the default, and what every button did before this existed — the press acts immediately.
+
+It is an **in-window overlay, not a dialog**, for the reason in `ui.rs`: any other `gtk::Window`
+becomes an xdg_toplevel floating above the kiosk and listed in alt-tab. The card is stacked above
+the grid and above any fan.
+
+Three things worth knowing, because none of them is visible in the JSON:
+
+- **It appears on every output.** The same button's card on two screens opens, cancels and confirms
+  as one, the way a menu already does. Confirming on either screen runs the action exactly once.
+- **Dismissal only ever cancels.** The cancel button, a tap on the dimmed area, and Escape all
+  cancel; nothing but the confirm button acts. A stray tap is therefore always the safe outcome.
+  (Escape is a convenience — a layer-shell surface has no keyboard focus until it is clicked.)
+- **The confirm button is dead for the first 600 ms**, and visibly dimmed while it is. A double tap
+  is roughly 250–500 ms, so a second contact from the same gesture cannot reach it. The card also
+  sits at the bottom of the surface, where the grid never puts a tile, so a second tap at the
+  button's own coordinates lands on the dimmed area and cancels. Two guarantees rather than one:
+  the geometric half would not survive a future layout change.
+
+`confirm` on a `menu` trigger, or on a button whose action did not resolve, is ignored with a
+warning — neither runs anything, so there would be nothing to confirm.
 
 ## Menus
 

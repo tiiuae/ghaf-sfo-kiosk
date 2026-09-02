@@ -202,6 +202,10 @@ pub fn build<R>(
     banner: &R,
     scrim: &gtk::Widget,
     shared: &crate::shared::Shared,
+    // Out-param, not a field on `Fan`: every card must be added to the overlay
+    // after ALL fans, and only ui::build knows when that is. Adding them here
+    // would put a later fan above an earlier member's card.
+    confirms: &mut Vec<(String, crate::confirm::Confirm)>,
 ) -> Fan
 where
     R: Reporter + Clone,
@@ -271,11 +275,24 @@ where
         // Per member id, not per output: shared.busy_for gives the SAME flag
         // to this menu item on every screen. See Shared::busy_for.
         let busy = shared.busy_for(&item.id);
-        button.connect_clicked(move |_| {
-            // Close FIRST, so a launched window never appears behind an open fan.
-            trig.set_active(false);
-            actions::dispatch(&action, &name, &reporter, &busy);
-        });
+        let fire = move || actions::dispatch(&action, &name, &reporter, &busy);
+
+        if let Some(spec_confirm) = &item.confirm {
+            let card = crate::confirm::build(spec_confirm, fire);
+            confirms.push((item.id.clone(), card.clone()));
+            button.connect_clicked(move |_| {
+                // Close FIRST, for the same reason as below: a card must not
+                // open behind the fan it was pressed in.
+                trig.set_active(false);
+                card.open();
+            });
+        } else {
+            button.connect_clicked(move |_| {
+                // Close FIRST, so a launched window never appears behind an open fan.
+                trig.set_active(false);
+                fire();
+            });
+        }
 
         fixed.put(&button, collapsed.0, collapsed.1);
         button.set_visible(false);
