@@ -10,6 +10,7 @@
 mod actions;
 mod banner;
 mod config;
+mod confirm;
 mod outputs;
 mod protocols;
 mod radial;
@@ -96,12 +97,21 @@ fn main() -> std::process::ExitCode {
             .chain(kiosk.menus.iter().flat_map(|m| &m.items))
             .filter(|b| matches!(b.action, config::Action::Unsupported { .. }))
             .count();
+        // Which buttons ask first is a product decision someone has to be able
+        // to check against a generated config, without a display.
+        let confirmed = kiosk
+            .buttons
+            .iter()
+            .chain(kiosk.menus.iter().flat_map(|m| &m.items))
+            .filter(|b| b.confirm.is_some())
+            .count();
         println!(
-            "ok: {} button(s) in the grid, {} in {} menu(s), {} unconfigured",
+            "ok: {} button(s) in the grid, {} in {} menu(s), {} unconfigured, {} confirmed",
             kiosk.buttons.len(),
             in_menus,
             kiosk.menus.len(),
             unconfigured,
+            confirmed,
         );
         return std::process::ExitCode::SUCCESS;
     }

@@ -20,6 +20,7 @@ use gtk::prelude::*;
 
 use crate::actions::{Busy, Reporter};
 use crate::banner::Banner;
+use crate::confirm::Confirm;
 use crate::radial::Fan;
 
 /// A `Reporter` that says the same thing on every output.
@@ -63,6 +64,11 @@ pub struct Shared {
     /// flag knows about the other's. Keyed the same way `fans` is, for the
     /// same reason: same id everywhere it appears, different ids independent.
     busy: Rc<RefCell<Vec<(String, Busy)>>>,
+    /// (button id, confirm). Keyed exactly as `fans` and `busy` are, for the
+    /// same reason: the SAME button on two outputs builds two cards that must
+    /// open, cancel and confirm as one, while two different buttons stay
+    /// independent.
+    confirms: Rc<RefCell<Vec<(String, Confirm)>>>,
 }
 
 impl Shared {
@@ -109,6 +115,11 @@ impl Shared {
         self.fans
             .borrow_mut()
             .retain(|(_, f)| f.widget.root().is_some());
+        // Unlike `busy`, a confirm holds a widget -- so it is pruned, for the
+        // reason busy is not.
+        self.confirms
+            .borrow_mut()
+            .retain(|(_, c)| c.widget.root().is_some());
     }
 
     /// Register one output's fan and link it to its peers on other outputs.
@@ -124,6 +135,36 @@ impl Shared {
             // Cloned out of the RefCell first: setting a peer re-enters this
             // callback for that fan, which borrows the same list.
             let peers: Vec<(String, Fan)> = fans.borrow().clone();
+            for (peer_id, peer) in &peers {
+                if peer_id != &id || peer.same_as(&me) {
+                    continue;
+                }
+                // Terminates: GTK emits `toggled` only on a real change.
+                if peer.is_open() != open {
+                    peer.set_open(open);
+                }
+            }
+        });
+    }
+
+    /// Register one output's confirmation card and link it to its peers.
+    ///
+    /// Without this the card appears only on the screen that was touched --
+    /// exactly the bug this module exists to fix, and worse here than for a
+    /// menu: the other screen would show an unguarded kiosk while a
+    /// destructive question sat unanswered on this one.
+    pub fn register_confirm(&self, button_id: &str, confirm: &Confirm) {
+        self.confirms
+            .borrow_mut()
+            .push((button_id.to_owned(), confirm.clone()));
+
+        let confirms = self.confirms.clone();
+        let id = button_id.to_owned();
+        let me = confirm.clone();
+        confirm.connect_toggled(move |open| {
+            // Cloned out of the RefCell first: setting a peer re-enters this
+            // callback for that confirm, which borrows the same list.
+            let peers: Vec<(String, Confirm)> = confirms.borrow().clone();
             for (peer_id, peer) in &peers {
                 if peer_id != &id || peer.same_as(&me) {
                     continue;

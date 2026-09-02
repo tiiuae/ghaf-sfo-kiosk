@@ -81,6 +81,37 @@ impl Default for Layout {
     }
 }
 
+/// Ask before acting.
+///
+/// Present only for a button that opts in; absent -- every button before this
+/// existed -- acts on the press, which is what keeps an older config safe.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Confirm {
+    /// The question, as the card's heading.
+    #[serde(default = "default_confirm_message")]
+    pub message: String,
+    /// What is about to be lost, under the question. Optional: a button whose
+    /// label already says it needs no second line.
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default = "default_confirm_label")]
+    pub confirm_label: String,
+    #[serde(default = "default_cancel_label")]
+    pub cancel_label: String,
+}
+
+fn default_confirm_message() -> String {
+    "Are you sure?".to_owned()
+}
+
+fn default_confirm_label() -> String {
+    "Yes".to_owned()
+}
+
+fn default_cancel_label() -> String {
+    "Cancel".to_owned()
+}
+
 // No ExitButton: leaving the kiosk is a keybinding, not a widget -- see ui.rs.
 // An `exit` object from an older producer is an unknown field, so serde ignores
 // it and the contract stays at version 1.
@@ -112,6 +143,11 @@ pub struct Button {
     /// something real.
     #[serde(default)]
     pub menu: Option<String>,
+    /// Ask before acting. On the button rather than on the action: it describes
+    /// how the button is pressed, not what it runs -- and hanging it off
+    /// `RawAction` would make "confirm a menu trigger" expressible.
+    #[serde(default)]
+    pub confirm: Option<Confirm>,
     #[serde(default)]
     pub action: RawAction,
 }
@@ -417,6 +453,9 @@ pub struct ResolvedButton {
     /// Validated `#rrggbb`, or None. Anything malformed was dropped at load with
     /// a warning, so this is safe to paste into a stylesheet.
     pub icon_color: Option<String>,
+    /// None means act on the press. Dropped at load for an action that runs
+    /// nothing, so a Some here always has something to confirm.
+    pub confirm: Option<Confirm>,
     pub action: Action,
 }
 
@@ -493,6 +532,32 @@ pub fn load(path: &Path) -> Result<Kiosk> {
                     None
                 }
             });
+            // A trigger opens a fan and an unconfigured button only reports a
+            // problem; neither acts, so there is nothing to confirm. Dropping it
+            // here keeps every later stage able to trust that a confirm has an
+            // action behind it.
+            let confirm = match (&b.confirm, &action) {
+                (Some(_), Action::Menu | Action::Unsupported { .. }) => {
+                    log::warn!(
+                        "button {:?}: ignoring \"confirm\", this button runs nothing",
+                        b.id
+                    );
+                    None
+                }
+                (c, _) => c.clone().map(|mut c| {
+                    // An empty message would render a card that asks nothing.
+                    // Fall back rather than drop the confirm: silently acting on
+                    // the press is the one failure this feature must not have.
+                    if c.message.trim().is_empty() {
+                        log::warn!(
+                            "button {:?}: empty confirm message, using the default",
+                            b.id
+                        );
+                        c.message = default_confirm_message();
+                    }
+                    c
+                }),
+            };
             (
                 b.menu.clone(),
                 ResolvedButton {
@@ -501,6 +566,7 @@ pub fn load(path: &Path) -> Result<Kiosk> {
                     description: b.description.clone(),
                     icon: b.icon.clone(),
                     icon_color,
+                    confirm,
                     action,
                 },
             )
@@ -652,6 +718,18 @@ mod tests {
                 b.id
             );
         }
+
+        // Clear is the destructive one, so the shipped example is also the
+        // worked example of asking first. Named, not counted: the point is
+        // which button asks.
+        let asks: Vec<&str> = k
+            .buttons
+            .iter()
+            .chain(&k.menus[0].items)
+            .filter(|b| b.confirm.is_some())
+            .map(|b| b.id.as_str())
+            .collect();
+        assert_eq!(asks, ["clear"], "only Clear asks before it acts");
     }
 
     /// A trigger runs nothing; it is a place to put buttons.
@@ -895,6 +973,88 @@ mod tests {
             css.trim(),
             ".kiosk-radial-item-power .kiosk-radial-item-icon { color: #ffc246; }"
         );
+    }
+
+    #[test]
+    fn a_button_can_ask_before_it_acts() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"clear","label":"Clear",
+                 "confirm":{"message":"Delete everything?","detail":"No undo."},
+                 "action":{"kind":"exec","argv":["/bin/true"]}}]}"#,
+        )
+        .unwrap();
+        let c = k.buttons[0].confirm.as_ref().expect("confirm parsed");
+        assert_eq!(c.message, "Delete everything?");
+        assert_eq!(c.detail.as_deref(), Some("No undo."));
+        // The labels the operator sees when nix does not name them.
+        assert_eq!(c.confirm_label, "Yes");
+        assert_eq!(c.cancel_label, "Cancel");
+    }
+
+    #[test]
+    fn a_button_without_confirm_still_acts_immediately() {
+        // Guards against a default that quietly turns confirmation on for
+        // every button in the product.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"plan","label":"Plan",
+                 "action":{"kind":"exec","argv":["/bin/true"]}}]}"#,
+        )
+        .unwrap();
+        assert!(k.buttons[0].confirm.is_none());
+    }
+
+    #[test]
+    fn an_unknown_field_inside_confirm_is_ignored() {
+        // The version-1 contract, in the direction that matters here: a newer
+        // nix module may add a key to this object without bumping `version`.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"clear","label":"Clear",
+                 "confirm":{"message":"Sure?","countdown_seconds":5},
+                 "action":{"kind":"exec","argv":["/bin/true"]}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(k.buttons[0].confirm.as_ref().unwrap().message, "Sure?");
+    }
+
+    #[test]
+    fn a_menu_trigger_cannot_carry_a_confirm() {
+        // A trigger opens a fan; there is nothing to confirm, and a card over
+        // an unopened menu would be a dead end.
+        let k = parse(
+            r#"{"version":1,"buttons":[
+                 {"id":"settings","label":"Settings","confirm":{"message":"Sure?"},
+                  "action":{"kind":"menu"}},
+                 {"id":"lock","label":"Lock","menu":"settings",
+                  "action":{"kind":"exec","argv":["/bin/true"]}}]}"#,
+        )
+        .unwrap();
+        assert!(k.menus[0].trigger.confirm.is_none());
+    }
+
+    #[test]
+    fn an_unconfigured_button_cannot_carry_a_confirm() {
+        // Pressing it reports a configuration problem rather than acting, so
+        // asking first would ask about nothing.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"broken","label":"Broken",
+                 "confirm":{"message":"Sure?"},"action":{"kind":"nonsense"}}]}"#,
+        )
+        .unwrap();
+        assert!(k.buttons[0].confirm.is_none());
+    }
+
+    #[test]
+    fn an_empty_confirm_message_falls_back_rather_than_dropping_the_guard() {
+        // Acting on the press because the message was blank is the one failure
+        // this feature must not have.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"clear","label":"Clear",
+                 "confirm":{"message":"   "},
+                 "action":{"kind":"exec","argv":["/bin/true"]}}]}"#,
+        )
+        .unwrap();
+        let c = k.buttons[0].confirm.as_ref().expect("confirm kept");
+        assert_eq!(c.message, "Are you sure?");
     }
 
     #[test]

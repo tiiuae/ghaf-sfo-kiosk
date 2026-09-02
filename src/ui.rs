@@ -16,6 +16,7 @@ use gtk::prelude::*;
 use crate::actions;
 use crate::banner::Banner;
 use crate::config::Kiosk;
+use crate::confirm;
 use crate::radial;
 use crate::status;
 
@@ -90,6 +91,10 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
     grid.set_homogeneous(true);
     grid.add_css_class("kiosk-grid");
 
+    // Collected, not added here: every card must sit ABOVE every fan, and only
+    // the assembly below knows when the last fan has been added.
+    let mut pending_confirms: Vec<(String, confirm::Confirm)> = Vec::new();
+
     for spec in &kiosk.buttons {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
         content.set_valign(gtk::Align::Center);
@@ -127,7 +132,17 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
         // to this button on every screen, so a press on one screen is visible
         // to the others. See Shared::busy_for.
         let busy = shared.busy_for(&spec.id);
-        button.connect_clicked(move |_| actions::dispatch(&action, &name, &reporter, &busy));
+        let fire = move || actions::dispatch(&action, &name, &reporter, &busy);
+
+        if let Some(spec_confirm) = &spec.confirm {
+            // Opening the card is all the press does; `fire` is handed to the
+            // card and runs only if the operator confirms.
+            let card = confirm::build(spec_confirm, fire);
+            pending_confirms.push((spec.id.clone(), card.clone()));
+            button.connect_clicked(move |_| card.open());
+        } else {
+            button.connect_clicked(move |_| fire());
+        }
 
         grid.append(&button);
     }
@@ -155,7 +170,14 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
         .menus
         .iter()
         .map(|menu| {
-            let fan = radial::build(menu, monitor, &reporter, &scrim_widget, shared);
+            let fan = radial::build(
+                menu,
+                monitor,
+                &reporter,
+                &scrim_widget,
+                shared,
+                &mut pending_confirms,
+            );
             overlay.add_overlay(&fan.widget);
             // Link this menu to the SAME menu on every other output, so opening
             // the fan on the laptop opens it on the room's screen too.
@@ -165,6 +187,22 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
         .collect();
 
     let fans = std::rc::Rc::new(fans);
+
+    // Last, so a card is above every fan and above the fans' scrim: the
+    // stacking is grid -> scrim -> fans -> confirms, bottom to top. A menu
+    // member can confirm too, and its card must not open behind the fan it
+    // was pressed in.
+    let confirms: Vec<confirm::Confirm> = pending_confirms
+        .into_iter()
+        .map(|(id, card)| {
+            overlay.add_overlay(&card.widget);
+            // Link this button's card to the SAME button's card on every other
+            // output, so the question is asked and answered on both screens.
+            shared.register_confirm(&id, &card);
+            card
+        })
+        .collect();
+    let confirms = std::rc::Rc::new(confirms);
 
     // Clicking the dimmed area closes whatever opened it.
     {
@@ -182,13 +220,24 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
     // member has focus and bubbles up from there.
     {
         let fans = fans.clone();
+        let confirms = confirms.clone();
         let keys = gtk::EventControllerKey::new();
         keys.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk::gdk::Key::Escape && fans.iter().any(radial::Fan::is_open) {
-                for fan in fans.iter() {
-                    fan.close();
+            if key == gtk::gdk::Key::Escape {
+                // Confirms first: they are the topmost thing, and Escape on an
+                // open card must cancel it rather than close the fan beneath.
+                if confirms.iter().any(confirm::Confirm::is_open) {
+                    for card in confirms.iter() {
+                        card.close();
+                    }
+                    return gtk::glib::Propagation::Stop;
                 }
-                return gtk::glib::Propagation::Stop;
+                if fans.iter().any(radial::Fan::is_open) {
+                    for fan in fans.iter() {
+                        fan.close();
+                    }
+                    return gtk::glib::Propagation::Stop;
+                }
             }
             gtk::glib::Propagation::Proceed
         });

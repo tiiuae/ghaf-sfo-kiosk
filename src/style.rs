@@ -148,6 +148,50 @@ window.kiosk-root {
 .kiosk-banner label { padding: 12px 20px; font-size: 15px; }
 .kiosk-banner-info label { background-color: #1b3048; }
 .kiosk-banner-error label { background-color: #4a1f26; color: #ffd9dd; }
+
+/* ── the confirmation ────────────────────────────────────────────────────── */
+/*
+ * Reuses .kiosk-scrim, as a SECOND instance of it rather than a shared one:
+ * two owners of one sheet would need a reference count, and a fan closing
+ * under an open card would undim the wrong thing. See confirm.rs.
+ */
+.kiosk-confirm-card {
+    background-color: #1d2530;
+    border: 1px solid #2b3542;
+    border-radius: 18px;
+    padding: 32px 40px;
+    margin-bottom: 64px;
+}
+.kiosk-confirm-heading { font-size: 26px; font-weight: bold; color: #f2f6fa; }
+.kiosk-confirm-body { font-size: 18px; color: #c2ccd8; margin-top: 12px; }
+.kiosk-confirm-actions { margin-top: 28px; }
+/* Touch targets, not mouse ones: both are comfortably past the 44px minimum. */
+.kiosk-confirm-actions button {
+    min-width: 200px;
+    min-height: 72px;
+    font-size: 20px;
+    font-weight: bold;
+    border-radius: 12px;
+    background-image: none;
+    box-shadow: none;
+}
+.kiosk-confirm-cancel {
+    background-color: #33445a;
+    border: 1px solid #6ea8ff;
+    color: #ffffff;
+}
+.kiosk-confirm-cancel:hover { background-color: #3d5169; background-image: none; }
+/* The destructive one, in the error banner's palette so that the-one-that-
+ * cannot-be-undone reads the same everywhere in the kiosk. */
+.kiosk-confirm-yes {
+    background-color: #4a1f26;
+    border: 1px solid #7a3340;
+    color: #ffd9dd;
+}
+.kiosk-confirm-yes:hover { background-color: #5c2830; background-image: none; }
+/* The arming window made visible, so it reads as a button waking up rather
+ * than a kiosk that has hung -- see ARM_MS in confirm.rs. */
+.kiosk-confirm-yes:disabled { opacity: 0.45; background-image: none; }
 ";
 
 /// Per-button icon colours, rendered as a stylesheet.
