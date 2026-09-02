@@ -137,7 +137,7 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
         if let Some(spec_confirm) = &spec.confirm {
             // Opening the card is all the press does; `fire` is handed to the
             // card and runs only if the operator confirms.
-            let card = confirm::build(spec_confirm, fire);
+            let card = confirm::build(spec_confirm, &spec.label, fire);
             pending_confirms.push((spec.id.clone(), card.clone()));
             button.connect_clicked(move |_| card.open());
         } else {
