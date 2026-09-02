@@ -33,11 +33,14 @@ const ARM_MS: u32 = 600;
 #[derive(Clone)]
 pub struct Confirm {
     /// Add this to the overlay ABOVE every fan.
-    pub widget: gtk::Box,
+    pub widget: gtk::Overlay,
     /// Open/closed and nothing else. Never in the widget tree, never drawn: it
     /// is a state cell that happens to emit `toggled`, which is what lets a
     /// peer on another output be driven by the same path that drives a fan.
     state: gtk::ToggleButton,
+    /// The button this card guards. Only for the journal -- shared rather than
+    /// copied so every clone of the handle names the same button.
+    label: Rc<str>,
 }
 
 impl Confirm {
@@ -81,23 +84,33 @@ impl Confirm {
 /// `on_yes` is the already-bound dispatch for this button. It runs at most once
 /// per opening, on the output whose button was actually pressed -- see the
 /// guard in the handler below.
-pub fn build<F: Fn() + 'static>(spec: &config::Confirm, on_yes: F) -> Confirm {
+pub fn build<F: Fn() + 'static>(spec: &config::Confirm, label: &str, on_yes: F) -> Confirm {
     // Its own scrim, not the fans'. Two owners of one sheet would need a
     // reference count and a rule about who may undim it, and a fan closing
     // under an open card would undim the wrong thing. A second box with the
     // same class is zero new invariants.
-    let sheet = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    sheet.add_css_class("kiosk-scrim");
-    sheet.add_css_class("kiosk-confirm");
-    sheet.set_can_target(false);
+    //
+    // The card is a SIBLING of the dimming, not a child of it -- an Overlay,
+    // exactly as ui.rs keeps the scrim and the fans apart. This is load
+    // bearing: `dim`'s click-to-cancel gesture fires on PRESS, while a
+    // button's `clicked` fires on RELEASE, so with the card inside `dim` a
+    // press on Yes cancelled the card and the release then found a hidden,
+    // untargetable button. The card closed and nothing ran.
+    let sheet = gtk::Overlay::new();
     sheet.set_visible(false);
+
+    let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    dim.add_css_class("kiosk-scrim");
+    dim.add_css_class("kiosk-confirm");
+    dim.set_can_target(false);
+    sheet.set_child(Some(&dim));
 
     let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
     card.add_css_class("kiosk-confirm-card");
     card.set_halign(gtk::Align::Center);
     // Bottom, not centre: ui.rs centres the grid vertically, so the bottom band
     // is the one region that never holds a tile. A second tap at the button's
-    // own coordinates therefore lands on the sheet, which cancels.
+    // own coordinates therefore lands on the dimming, which cancels.
     card.set_valign(gtk::Align::End);
 
     let heading = gtk::Label::new(Some(&spec.message));
@@ -133,7 +146,7 @@ pub fn build<F: Fn() + 'static>(spec: &config::Confirm, on_yes: F) -> Confirm {
     actions.append(&yes);
 
     card.append(&actions);
-    sheet.append(&card);
+    sheet.add_overlay(&card);
 
     let state = gtk::ToggleButton::new();
 
@@ -143,6 +156,7 @@ pub fn build<F: Fn() + 'static>(spec: &config::Confirm, on_yes: F) -> Confirm {
 
     state.connect_toggled({
         let sheet = sheet.clone();
+        let dim = dim.clone();
         let yes = yes.clone();
         let cancel = cancel.clone();
         let generation = generation.clone();
@@ -153,8 +167,8 @@ pub fn build<F: Fn() + 'static>(spec: &config::Confirm, on_yes: F) -> Confirm {
 
             if opening {
                 sheet.set_visible(true);
-                sheet.add_css_class("kiosk-scrim-open");
-                sheet.set_can_target(true);
+                dim.add_css_class("kiosk-scrim-open");
+                dim.set_can_target(true);
 
                 yes.set_sensitive(false);
                 glib::timeout_add_local_once(
@@ -179,8 +193,8 @@ pub fn build<F: Fn() + 'static>(spec: &config::Confirm, on_yes: F) -> Confirm {
                     }
                 });
             } else {
-                sheet.remove_css_class("kiosk-scrim-open");
-                sheet.set_can_target(false);
+                dim.remove_css_class("kiosk-scrim-open");
+                dim.set_can_target(false);
                 // Hidden, not merely transparent: an opacity-0 child is still
                 // focusable and still clickable.
                 sheet.set_visible(false);
@@ -191,6 +205,7 @@ pub fn build<F: Fn() + 'static>(spec: &config::Confirm, on_yes: F) -> Confirm {
     let confirm = Confirm {
         widget: sheet.clone(),
         state,
+        label: Rc::from(label),
     };
 
     // Tapping the dimmed area cancels, matching the fans -- and dismissal only
@@ -198,13 +213,19 @@ pub fn build<F: Fn() + 'static>(spec: &config::Confirm, on_yes: F) -> Confirm {
     {
         let me = confirm.clone();
         let click = gtk::GestureClick::new();
-        click.connect_pressed(move |_, _, _, _| me.close());
-        sheet.add_controller(click);
+        click.connect_pressed(move |_, _, _, _| {
+            log::info!("confirm {:?}: dismissed by a tap outside", me.label);
+            me.close();
+        });
+        dim.add_controller(click);
     }
 
     {
         let me = confirm.clone();
-        cancel.connect_clicked(move |_| me.close());
+        cancel.connect_clicked(move |_| {
+            log::info!("confirm {:?}: cancelled", me.label);
+            me.close();
+        });
     }
 
     {
@@ -216,8 +237,12 @@ pub fn build<F: Fn() + 'static>(spec: &config::Confirm, on_yes: F) -> Confirm {
             // is shut before `on_yes` is reached, and GTK dispatches input one
             // event at a time.
             if !me.is_open() {
+                log::info!("confirm: already answered on another screen; ignoring");
                 return;
             }
+            // Logged before dispatch, so a confirmed press is visible in the
+            // journal even if the action itself never reports anything.
+            log::info!("confirm {:?}: confirmed", me.label);
             me.close();
             on_yes();
         });

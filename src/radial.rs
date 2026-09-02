@@ -278,7 +278,7 @@ where
         let fire = move || actions::dispatch(&action, &name, &reporter, &busy);
 
         if let Some(spec_confirm) = &item.confirm {
-            let card = crate::confirm::build(spec_confirm, fire);
+            let card = crate::confirm::build(spec_confirm, &item.label, fire);
             confirms.push((item.id.clone(), card.clone()));
             button.connect_clicked(move |_| {
                 // Close FIRST, for the same reason as below: a card must not
