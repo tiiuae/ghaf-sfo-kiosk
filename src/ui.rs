@@ -94,6 +94,7 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
     // Collected, not added here: every card must sit ABOVE every fan, and only
     // the assembly below knows when the last fan has been added.
     let mut pending_confirms: Vec<(String, confirm::Confirm)> = Vec::new();
+    let mut pending_settimes: Vec<(String, crate::settime::SetTime)> = Vec::new();
 
     for spec in &kiosk.buttons {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
@@ -125,23 +126,35 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
             button.add_css_class("kiosk-button-unconfigured");
         }
 
-        let action = spec.action.clone();
-        let name = spec.label.clone();
-        let reporter = reporter.clone();
-        // Per button id, not per output: shared.busy_for gives the SAME flag
-        // to this button on every screen, so a press on one screen is visible
-        // to the others. See Shared::busy_for.
-        let busy = shared.busy_for(&spec.id);
-        let fire = move || actions::dispatch(&action, &name, &reporter, &busy);
-
-        if let Some(spec_confirm) = &spec.confirm {
-            // Opening the card is all the press does; `fire` is handed to the
-            // card and runs only if the operator confirms.
-            let card = confirm::build(spec_confirm, &spec.label, fire);
-            pending_confirms.push((spec.id.clone(), card.clone()));
+        if let crate::config::Action::SetTime {
+            host,
+            port,
+            reboot_threshold_sec,
+        } = &spec.action
+        {
+            // The kiosk owns this one: the press opens a card, nothing dispatches.
+            let card = crate::settime::build(host, *port, *reboot_threshold_sec, shared);
+            pending_settimes.push((spec.id.clone(), card.clone()));
             button.connect_clicked(move |_| card.open());
         } else {
-            button.connect_clicked(move |_| fire());
+            let action = spec.action.clone();
+            let name = spec.label.clone();
+            let reporter = reporter.clone();
+            // Per button id, not per output: shared.busy_for gives the SAME flag
+            // to this button on every screen, so a press on one screen is visible
+            // to the others. See Shared::busy_for.
+            let busy = shared.busy_for(&spec.id);
+            let fire = move || actions::dispatch(&action, &name, &reporter, &busy);
+
+            if let Some(spec_confirm) = &spec.confirm {
+                // Opening the card is all the press does; `fire` is handed to the
+                // card and runs only if the operator confirms.
+                let card = confirm::build(spec_confirm, &spec.label, fire);
+                pending_confirms.push((spec.id.clone(), card.clone()));
+                button.connect_clicked(move |_| card.open());
+            } else {
+                button.connect_clicked(move |_| fire());
+            }
         }
 
         grid.append(&button);
@@ -177,6 +190,7 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
                 &scrim_widget,
                 shared,
                 &mut pending_confirms,
+                &mut pending_settimes,
             );
             overlay.add_overlay(&fan.widget);
             // Link this menu to the SAME menu on every other output, so opening
@@ -203,6 +217,19 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
         })
         .collect();
     let confirms = std::rc::Rc::new(confirms);
+
+    // Above the confirm cards, below the restart screen: the Set Time card is a
+    // deliberate flow the operator opened, but a pending restart still trumps it.
+    for (id, card) in pending_settimes {
+        overlay.add_overlay(&card.widget);
+        shared.register_settime(&id, &card);
+    }
+
+    // Above even the cards: a pending restart covers the whole kiosk. Hidden
+    // until the marker file appears -- see shutdown.rs. Same logo as the bar.
+    let restarting = crate::shutdown::build(kiosk.logo.as_deref());
+    overlay.add_overlay(&restarting.widget);
+    shared.register_restarting(restarting);
 
     // Clicking the dimmed area closes whatever opened it.
     {

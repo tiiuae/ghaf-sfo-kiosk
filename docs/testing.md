@@ -75,6 +75,13 @@ ways that look like nothing at all:
    the output size, and the line it logged on startup says what it chose.
 7. There is **no exit affordance** anywhere: not on the arc, not in the corner.
 
+The restart screen, driven by its marker file:
+
+8. `touch "$XDG_RUNTIME_DIR/sfo-kiosk-restarting"` — an opaque screen covers the whole surface,
+   over any open fan or card, with a spinner and "Restarting". Nothing under it takes a click.
+   `rm` the file — it goes away again. `touch` it before launching the kiosk — it comes up
+   already showing.
+
 **It does not prove** anything about the parts that only exist inside a Ghaf image — see below.
 
 ## 3. Only on the device
@@ -98,3 +105,7 @@ ways that look like nothing at all:
   device, check it three ways: from the kiosk; **while an application window has focus**, which is
   the case an in-app handler could never serve; and again after exiting, where it must do nothing,
   because the binding is reverted with the rest of the lockdown.
+- **The restart screen through a real reboot.** A clock correction over the threshold in
+  ⚙ Settings → Set Time has `sfo-set-time` (in tiiuae/ghaf-sfo-laptop) write the marker, so the
+  screen should appear the moment the confirm dialog is dismissed and stay up until the display
+  powers off — no window where the kiosk sits there looking idle after the operator acted.

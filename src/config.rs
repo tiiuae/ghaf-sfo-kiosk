@@ -198,6 +198,16 @@ pub struct RawAction {
     /// raise "Mission Planner".
     #[serde(default)]
     pub window_app_id: Option<String>,
+    /// "set-time" only: the host and TCP port of the clock socket on net-vm,
+    /// and the size at or above which a correction reboots. All three arrive
+    /// resolved from the nix module; the defaults below are the SFO values so a
+    /// bare `{ "kind": "set-time" }` still works.
+    #[serde(default)]
+    pub host: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub reboot_threshold_sec: Option<u32>,
 }
 
 /// How to tell that a GIVC job has finished. Absent for a launcher button.
@@ -273,6 +283,15 @@ pub enum Action {
         /// second window. Mutually exclusive with `await_job` by construction
         /// -- see `single_instance` on `RawAction`.
         single_instance: Option<SingleInstance>,
+    },
+    /// Open the clock-set card. The kiosk owns the whole flow: a Calendar and
+    /// hour/minute steppers, the change sized against `reboot_threshold_sec`
+    /// live, and the string sent to `host:port` (net-vm's socket) on confirm.
+    /// Replaces the old `exec` of a yad script -- see settime.rs.
+    SetTime {
+        host: String,
+        port: u16,
+        reboot_threshold_sec: u32,
     },
     /// Not a command: a menu trigger. Renders in a screen corner and fans the
     /// buttons naming it out along an arc.
@@ -428,6 +447,25 @@ impl Action {
                     target: format!("{unit} in {vm}"),
                     await_job: await_job_for(raw, unit),
                     single_instance: None,
+                }
+            }
+            "set-time" => {
+                let host = raw.host.clone().unwrap_or_else(|| "net-vm".to_owned());
+                if host.trim().is_empty() {
+                    return Self::Unsupported {
+                        reason: "action kind \"set-time\" has an empty \"host\"".to_owned(),
+                    };
+                }
+                let port = raw.port.unwrap_or(9955);
+                if port == 0 {
+                    return Self::Unsupported {
+                        reason: "action kind \"set-time\" has port 0".to_owned(),
+                    };
+                }
+                Self::SetTime {
+                    host,
+                    port,
+                    reboot_threshold_sec: raw.reboot_threshold_sec.unwrap_or(1800),
                 }
             }
             // Permissive about the other fields: the nix module already asserts
@@ -1400,5 +1438,59 @@ mod tests {
             panic!("expected Unsupported");
         };
         assert!(reason.contains("window_app_id"), "got: {reason}");
+    }
+
+    #[test]
+    fn set_time_resolves_with_its_socket_and_threshold() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"t","label":"Set Time","action":{
+                 "kind":"set-time","host":"net-vm","port":9955,
+                 "reboot_threshold_sec":1800}}]}"#,
+        )
+        .unwrap();
+        let Action::SetTime {
+            host,
+            port,
+            reboot_threshold_sec,
+        } = &k.buttons[0].action
+        else {
+            panic!("expected a set-time action");
+        };
+        assert_eq!(host, "net-vm");
+        assert_eq!(*port, 9955);
+        assert_eq!(*reboot_threshold_sec, 1800);
+    }
+
+    #[test]
+    fn set_time_fills_in_the_sfo_defaults() {
+        // A bare kind still works: the nix module always sets all three, but a
+        // hand-written config should not have to.
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"t","label":"Set Time","action":{
+                 "kind":"set-time"}}]}"#,
+        )
+        .unwrap();
+        let Action::SetTime {
+            host,
+            port,
+            reboot_threshold_sec,
+        } = &k.buttons[0].action
+        else {
+            panic!("expected a set-time action");
+        };
+        assert_eq!(
+            (host.as_str(), *port, *reboot_threshold_sec),
+            ("net-vm", 9955, 1800)
+        );
+    }
+
+    #[test]
+    fn set_time_with_port_zero_is_unsupported() {
+        let k = parse(
+            r#"{"version":1,"buttons":[{"id":"t","label":"Set Time","action":{
+                 "kind":"set-time","port":0}}]}"#,
+        )
+        .unwrap();
+        assert!(matches!(k.buttons[0].action, Action::Unsupported { .. }));
     }
 }

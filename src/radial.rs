@@ -206,6 +206,7 @@ pub fn build<R>(
     // after ALL fans, and only ui::build knows when that is. Adding them here
     // would put a later fan above an earlier member's card.
     confirms: &mut Vec<(String, crate::confirm::Confirm)>,
+    settimes: &mut Vec<(String, crate::settime::SetTime)>,
 ) -> Fan
 where
     R: Reporter + Clone,
@@ -268,30 +269,47 @@ where
             button.add_css_class("kiosk-button-unconfigured");
         }
 
-        let action = item.action.clone();
-        let name = item.label.clone();
-        let reporter = banner.clone();
-        let trig = trigger.clone();
-        // Per member id, not per output: shared.busy_for gives the SAME flag
-        // to this menu item on every screen. See Shared::busy_for.
-        let busy = shared.busy_for(&item.id);
-        let fire = move || actions::dispatch(&action, &name, &reporter, &busy);
-
-        if let Some(spec_confirm) = &item.confirm {
-            let card = crate::confirm::build(spec_confirm, &item.label, fire);
-            confirms.push((item.id.clone(), card.clone()));
+        if let Action::SetTime {
+            host,
+            port,
+            reboot_threshold_sec,
+        } = &item.action
+        {
+            let card = crate::settime::build(host, *port, *reboot_threshold_sec, shared);
+            settimes.push((item.id.clone(), card.clone()));
+            let trig = trigger.clone();
             button.connect_clicked(move |_| {
-                // Close FIRST, for the same reason as below: a card must not
-                // open behind the fan it was pressed in.
+                // Close FIRST: the card must not open behind the fan it was
+                // pressed in.
                 trig.set_active(false);
                 card.open();
             });
         } else {
-            button.connect_clicked(move |_| {
-                // Close FIRST, so a launched window never appears behind an open fan.
-                trig.set_active(false);
-                fire();
-            });
+            let action = item.action.clone();
+            let name = item.label.clone();
+            let reporter = banner.clone();
+            let trig = trigger.clone();
+            // Per member id, not per output: shared.busy_for gives the SAME flag
+            // to this menu item on every screen. See Shared::busy_for.
+            let busy = shared.busy_for(&item.id);
+            let fire = move || actions::dispatch(&action, &name, &reporter, &busy);
+
+            if let Some(spec_confirm) = &item.confirm {
+                let card = crate::confirm::build(spec_confirm, &item.label, fire);
+                confirms.push((item.id.clone(), card.clone()));
+                button.connect_clicked(move |_| {
+                    // Close FIRST, for the same reason as below: a card must not
+                    // open behind the fan it was pressed in.
+                    trig.set_active(false);
+                    card.open();
+                });
+            } else {
+                button.connect_clicked(move |_| {
+                    // Close FIRST, so a launched window never appears behind an open fan.
+                    trig.set_active(false);
+                    fire();
+                });
+            }
         }
 
         fixed.put(&button, collapsed.0, collapsed.1);

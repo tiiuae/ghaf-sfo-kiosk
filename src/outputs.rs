@@ -18,6 +18,11 @@ pub fn manage(app: &gtk::Application, kiosk: Rc<Kiosk>) {
     // One set of shared state for the whole run: every surface registers into
     // it, so all outputs show the same menu state and the same banners.
     let shared = crate::shared::Shared::new();
+
+    // One marker-file watch for the process, driving every output's restart
+    // screen. Started before any surface exists so a marker already present at
+    // startup is picked up as each surface registers.
+    crate::shutdown::watch(&shared);
     let Some(display) = gtk::gdk::Display::default() else {
         log::error!("no GDK display; cannot create a surface");
         return;
