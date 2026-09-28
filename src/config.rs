@@ -199,15 +199,20 @@ pub struct RawAction {
     #[serde(default)]
     pub window_app_id: Option<String>,
     /// "set-time" only: the host and TCP port of the clock socket on net-vm,
-    /// and the size at or above which a correction reboots. All three arrive
-    /// resolved from the nix module; the defaults below are the SFO values so a
-    /// bare `{ "kind": "set-time" }` still works.
+    /// the host and port of the verdict socket on ghaf-host, and the fallback
+    /// threshold used only when that verdict cannot be had. All arrive resolved
+    /// from the nix module; the defaults below are the SFO values so a bare
+    /// `{ "kind": "set-time" }` still works.
     #[serde(default)]
     pub host: Option<String>,
     #[serde(default)]
     pub port: Option<u16>,
     #[serde(default)]
     pub reboot_threshold_sec: Option<u32>,
+    #[serde(default)]
+    pub verdict_host: Option<String>,
+    #[serde(default)]
+    pub verdict_port: Option<u16>,
 }
 
 /// How to tell that a GIVC job has finished. Absent for a launcher button.
@@ -285,13 +290,18 @@ pub enum Action {
         single_instance: Option<SingleInstance>,
     },
     /// Open the clock-set card. The kiosk owns the whole flow: a Calendar and
-    /// hour/minute steppers, the change sized against `reboot_threshold_sec`
-    /// live, and the string sent to `host:port` (net-vm's socket) on confirm.
+    /// hour/minute steppers, the change sized live, and the string sent to
+    /// `host:port` (net-vm's socket) on confirm.
     /// Replaces the old `exec` of a yad script -- see settime.rs.
+    ///
+    /// The restart verdict comes from `verdict_host:verdict_port`, never from
+    /// here -- see settime.rs. `reboot_threshold_sec` is only the fallback.
     SetTime {
         host: String,
         port: u16,
         reboot_threshold_sec: u32,
+        verdict_host: String,
+        verdict_port: u16,
     },
     /// Not a command: a menu trigger. Renders in a screen corner and fans the
     /// buttons naming it out along an arc.
@@ -462,10 +472,20 @@ impl Action {
                         reason: "action kind \"set-time\" has port 0".to_owned(),
                     };
                 }
+                // An unusable verdict target is not fatal: the card still sets
+                // the clock, and says its restart wording is unconfirmed.
+                let verdict_host = raw
+                    .verdict_host
+                    .clone()
+                    .filter(|h| !h.trim().is_empty())
+                    .unwrap_or_else(|| "ghaf-host".to_owned());
+                let verdict_port = raw.verdict_port.unwrap_or(9956);
                 Self::SetTime {
                     host,
                     port,
                     reboot_threshold_sec: raw.reboot_threshold_sec.unwrap_or(1800),
+                    verdict_host,
+                    verdict_port,
                 }
             }
             // Permissive about the other fields: the nix module already asserts
@@ -1445,13 +1465,16 @@ mod tests {
         let k = parse(
             r#"{"version":1,"buttons":[{"id":"t","label":"Set Time","action":{
                  "kind":"set-time","host":"net-vm","port":9955,
-                 "reboot_threshold_sec":1800}}]}"#,
+                 "reboot_threshold_sec":1800,
+                 "verdict_host":"ghaf-host","verdict_port":9956}}]}"#,
         )
         .unwrap();
         let Action::SetTime {
             host,
             port,
             reboot_threshold_sec,
+            verdict_host,
+            verdict_port,
         } = &k.buttons[0].action
         else {
             panic!("expected a set-time action");
@@ -1459,11 +1482,15 @@ mod tests {
         assert_eq!(host, "net-vm");
         assert_eq!(*port, 9955);
         assert_eq!(*reboot_threshold_sec, 1800);
+        // The clock is set on net-vm; only the host can say whether that
+        // restarts the machine, so these must be a different node.
+        assert_eq!(verdict_host, "ghaf-host");
+        assert_eq!(*verdict_port, 9956);
     }
 
     #[test]
     fn set_time_fills_in_the_sfo_defaults() {
-        // A bare kind still works: the nix module always sets all three, but a
+        // A bare kind still works: the nix module always sets them all, but a
         // hand-written config should not have to.
         let k = parse(
             r#"{"version":1,"buttons":[{"id":"t","label":"Set Time","action":{
@@ -1474,13 +1501,21 @@ mod tests {
             host,
             port,
             reboot_threshold_sec,
+            verdict_host,
+            verdict_port,
         } = &k.buttons[0].action
         else {
             panic!("expected a set-time action");
         };
         assert_eq!(
-            (host.as_str(), *port, *reboot_threshold_sec),
-            ("net-vm", 9955, 1800)
+            (
+                host.as_str(),
+                *port,
+                *reboot_threshold_sec,
+                verdict_host.as_str(),
+                *verdict_port
+            ),
+            ("net-vm", 9955, 1800, "ghaf-host", 9956)
         );
     }
 

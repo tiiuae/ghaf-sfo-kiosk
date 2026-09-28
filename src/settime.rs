@@ -16,11 +16,15 @@
 //! time: the calendar makes a month/year jump one gesture, the steppers keep big
 //! touch targets for the common case of nudging the clock on a device with no
 //! other reference. One primary button that always shows the size of the change
-//! and, at or above `reboot_threshold_sec`, says the machine will restart, takes
-//! the destructive styling and goes dead for a moment so a double tap cannot
-//! reach it. On confirm the kiosk writes `YYYY-MM-DD HH:MM` to net-vm's socket
-//! itself; a large correction goes straight into the restart screen
-//! (shutdown.rs).
+//! and, when the machine will restart, says so, takes the destructive styling
+//! and goes dead for a moment so a double tap cannot reach it. On confirm the
+//! kiosk writes `YYYY-MM-DD HH:MM` to net-vm's socket itself; a correction that
+//! restarts goes straight into the restart screen (shutdown.rs).
+//!
+//! **The restart verdict is the host's.** It reboots on the clock's distance
+//! from its boot anchor, not on the size of the gesture, so the card asks
+//! `verdict_host:verdict_port` rather than working it out. Falls back to the
+//! gesture, marked "unconfirmed", when the host cannot be reached.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -40,9 +44,56 @@ use crate::shared::{Broadcast, Shared};
 /// `confirm`'s arming window.
 const ARM_MS: u32 = 600;
 
+/// How long the card waits after the last stepper tap before asking the host.
+/// Long enough that holding `+` is one query, short enough not to be noticed.
+const ASK_DEBOUNCE_MS: u32 = 250;
+
 /// Read cap on the socket reply: the helper answers `ok` or a short
-/// `error: ...` line.
+/// `error: ...` line, and the verdict socket two short lines.
 const REPLY_CAP: usize = 256;
+
+/// The host's clock: displacement from this boot's anchor, and its threshold.
+/// `None` until it answers -- the card then says "unconfirmed" rather than
+/// inventing a verdict.
+type Standing = Rc<Cell<Option<(i64, i64)>>>;
+
+/// The host's answer for ONE target: (target, restarts, resulting displacement).
+/// Keyed by the target: never show an answer to a question since changed.
+type Verdict = Rc<RefCell<Option<(String, bool, i64)>>>;
+
+/// Deferred, because the asker calls `recompute` and `recompute` calls it.
+type AskVerdict = Rc<RefCell<Box<dyn Fn(&str)>>>;
+
+/// `restart`/`no-restart` plus `displacement_after=` from a targeted reply.
+fn parse_verdict(reply: &str) -> Option<(bool, i64)> {
+    let restarts = match reply.split_whitespace().next()? {
+        "restart" => true,
+        "no-restart" => false,
+        _ => return None,
+    };
+    let after = reply
+        .split_whitespace()
+        .find_map(|t| t.strip_prefix("displacement_after="))?
+        .parse()
+        .ok()?;
+    Some((restarts, after))
+}
+
+/// `displacement_now=` and `threshold=` from an untargeted reply. Both or
+/// neither: half an answer would be shown in the words used for a real verdict.
+/// A non-positive threshold would warn about every correction, so it is refused.
+fn parse_standing(reply: &str) -> Option<(i64, i64)> {
+    let mut displacement = None;
+    let mut threshold = None;
+    for token in reply.split_whitespace() {
+        if let Some(v) = token.strip_prefix("displacement_now=") {
+            displacement = v.parse().ok();
+        } else if let Some(v) = token.strip_prefix("threshold=") {
+            threshold = v.parse().ok().filter(|t: &i64| *t > 0);
+        }
+    }
+    Some((displacement?, threshold?))
+}
 
 #[derive(Clone)]
 pub struct SetTime {
@@ -73,6 +124,19 @@ impl SetTime {
     pub fn same_as(&self, other: &SetTime) -> bool {
         self.state == other.state
     }
+}
+
+/// The wire format the host parses: the one string both the verdict query and
+/// the confirm send, so they cannot disagree about which instant is meant.
+fn wire_target(calendar: &gtk::Calendar, hour: i32, minute: i32) -> String {
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        calendar.year(),
+        calendar.month() + 1,
+        calendar.day(),
+        hour,
+        minute
+    )
 }
 
 /// `d h min` from a second count, omitting zero units, always at least minutes.
@@ -183,9 +247,23 @@ fn two_digit() -> Rc<dyn Fn(i32) -> String> {
 }
 
 /// Build one output's clock-set card. Hidden until `open`.
-pub fn build(host: &str, port: u16, threshold_sec: u32, shared: &Shared) -> SetTime {
+pub fn build(
+    host: &str,
+    port: u16,
+    threshold_sec: u32,
+    verdict_host: &str,
+    verdict_port: u16,
+    shared: &Shared,
+) -> SetTime {
     let host = host.to_owned();
+    let verdict_host = verdict_host.to_owned();
     let reporter = shared.reporter();
+    let standing: Standing = Rc::new(Cell::new(None));
+    let verdict: Verdict = Rc::new(RefCell::new(None));
+    // Filled once `recompute` exists, like `notify` below: the asker has to
+    // call recompute, and recompute has to call the asker.
+    // `|_: &str|` annotated: a bare `|_|` will not infer into `dyn Fn(&str)`.
+    let schedule_ask: AskVerdict = Rc::new(RefCell::new(Box::new(|_: &str| {})));
 
     let sheet = gtk::Overlay::new();
     sheet.set_visible(false);
@@ -262,6 +340,9 @@ pub fn build(host: &str, port: u16, threshold_sec: u32, shared: &Shared) -> SetT
         let summary = summary.clone();
         let set_btn = set_btn.clone();
         let generation = generation.clone();
+        let standing = standing.clone();
+        let verdict = verdict.clone();
+        let schedule_ask = schedule_ask.clone();
         Rc::new(move || {
             let Ok(now) = glib::DateTime::now_local() else {
                 return;
@@ -279,17 +360,57 @@ pub fn build(host: &str, port: u16, threshold_sec: u32, shared: &Shared) -> SetT
             let delta = target.to_unix() - now.to_unix();
             let dir = if delta >= 0 { "forward" } else { "backward" };
             let mag = delta.abs();
-            let restarts = mag >= i64::from(threshold_sec);
+
+            // Ask the host about THIS target rather than composing an answer:
+            // `delta` is gui-vm's clock and zone, `displacement` is the host's.
+            let want = wire_target(&calendar, hour.get(), minute.get());
+            let known = standing.get();
+            let threshold = known.map_or(i64::from(threshold_sec), |(_, t)| t);
+
+            let answered = verdict
+                .borrow()
+                .as_ref()
+                .filter(|(t, _, _)| *t == want)
+                .map(|(_, r, a)| (*r, *a));
+
+            // Until it answers, an estimate -- flagged as such below.
+            let after = answered
+                .map(|(_, a)| a)
+                .or_else(|| known.map(|(displacement, _)| displacement + delta));
+            let restarts = answered
+                .map(|(r, _)| r)
+                .unwrap_or_else(|| after.map_or(mag >= threshold, |a| a.abs() >= threshold));
+            let confirmed = answered.is_some();
+
+            if answered.is_none() && mag >= 60 {
+                (schedule_ask.borrow())(&want);
+            }
 
             if mag < 60 {
                 summary.set_text("No change.");
-            } else if restarts {
-                summary.set_text(&format!(
-                    "{} {dir} \u{2014} the system will restart to apply it.",
-                    human(mag)
-                ));
             } else {
-                summary.set_text(&format!("{} {dir} \u{2014} no restart.", human(mag)));
+                let tail = if !confirmed {
+                    // Not the host's answer yet. Say so rather than state a
+                    // verdict we cannot stand behind.
+                    if restarts {
+                        "the system will probably restart (unconfirmed).".to_owned()
+                    } else {
+                        "probably no restart (unconfirmed).".to_owned()
+                    }
+                } else if !restarts {
+                    "no restart.".to_owned()
+                } else if mag >= threshold {
+                    "the system will restart to apply it.".to_owned()
+                } else {
+                    // Sub-threshold gesture that still restarts. Unexplained
+                    // that reads as a bug, so name the accumulation.
+                    format!(
+                        "that leaves the clock {} from where this boot started, \
+                         so the system will restart.",
+                        human(after.unwrap_or(0).abs())
+                    )
+                };
+                summary.set_text(&format!("{} {dir} \u{2014} {tail}", human(mag)));
             }
 
             if restarts {
@@ -322,6 +443,34 @@ pub fn build(host: &str, port: u16, threshold_sec: u32, shared: &Shared) -> SetT
         move || recompute()
     });
 
+    // Debounced: one query per pause, not per stepper tap. Each tap supersedes
+    // the pending one, so holding `+` costs a single query when it stops.
+    *schedule_ask.borrow_mut() = Box::new({
+        let verdict = verdict.clone();
+        let recompute = recompute.clone();
+        let verdict_host = verdict_host.clone();
+        let pending = Rc::new(Cell::new(0u64));
+        move |want: &str| {
+            let mine = pending.get().wrapping_add(1);
+            pending.set(mine);
+            let (want, verdict, recompute, host, pending) = (
+                want.to_owned(),
+                verdict.clone(),
+                recompute.clone(),
+                verdict_host.clone(),
+                pending.clone(),
+            );
+            glib::timeout_add_local_once(
+                std::time::Duration::from_millis(u64::from(ASK_DEBOUNCE_MS)),
+                move || {
+                    if pending.get() == mine {
+                        ask_verdict(&host, verdict_port, &want, verdict, recompute);
+                    }
+                },
+            );
+        }
+    });
+
     let actions = gtk::Box::new(gtk::Orientation::Horizontal, 24);
     actions.add_css_class("kiosk-settime-actions");
     actions.set_halign(gtk::Align::Center);
@@ -347,6 +496,9 @@ pub fn build(host: &str, port: u16, threshold_sec: u32, shared: &Shared) -> SetT
         let recompute = recompute.clone();
         let calendar = calendar.clone();
         let (hour, minute) = (hour.clone(), minute.clone());
+        let standing = standing.clone();
+        let verdict = verdict.clone();
+        let verdict_host = verdict_host.clone();
         move |t| {
             if t.is_active() {
                 // Every open starts from the current clock, so the card shows
@@ -356,7 +508,18 @@ pub fn build(host: &str, port: u16, threshold_sec: u32, shared: &Shared) -> SetT
                     hour.set(now.hour());
                     minute.set(now.minute());
                 }
+                // Asked once per opening, not per tap: the answer does not go
+                // stale while the card is up, and a unit per keystroke on the
+                // host would be an absurd price for wording a label.
+                standing.set(None);
+                verdict.replace(None);
                 recompute();
+                ask_standing(
+                    &verdict_host,
+                    verdict_port,
+                    standing.clone(),
+                    recompute.clone(),
+                );
                 sheet.set_visible(true);
                 dim.add_css_class("kiosk-scrim-open");
                 dim.set_can_target(true);
@@ -413,6 +576,112 @@ pub fn build(host: &str, port: u16, threshold_sec: u32, shared: &Shared) -> SetT
     }
 
     settime
+}
+
+/// Ask the host what setting the clock to `want` would do.
+///
+/// The host parses `want` in its own zone against its own clock, so neither
+/// gui-vm's zone nor its clock enters the answer. Composing the two was the bug.
+fn ask_verdict(host: &str, port: u16, want: &str, verdict: Verdict, recompute: Rc<dyn Fn()>) {
+    let client = gio::SocketClient::new();
+    let line = format!("{want}\n");
+    let want = want.to_owned();
+    client.connect_to_host_async(host, port, gio::Cancellable::NONE, move |res| {
+        let Ok(conn) = res else {
+            log::warn!("set-time: no clock verdict from the host");
+            return;
+        };
+        conn.output_stream().write_all_async(
+            line.into_bytes(),
+            glib::Priority::DEFAULT,
+            gio::Cancellable::NONE,
+            move |res| {
+                if res.is_err() {
+                    return;
+                }
+                let istream = conn.input_stream();
+                istream.read_all_async(
+                    vec![0u8; REPLY_CAP],
+                    glib::Priority::DEFAULT,
+                    gio::Cancellable::NONE,
+                    move |res| {
+                        let _conn = conn;
+                        let Ok((buf, n, _)) = res else { return };
+                        let reply = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        match parse_verdict(&reply) {
+                            Some((restarts, after)) => {
+                                log::info!("set-time: host says {want:?} -> restart={restarts} after={after}s");
+                                *verdict.borrow_mut() = Some((want, restarts, after));
+                                recompute();
+                            }
+                            None => log::warn!(
+                                "set-time: unusable verdict {:?}",
+                                reply.trim()
+                            ),
+                        }
+                    },
+                );
+            },
+        );
+    });
+}
+
+/// Ask the host where its clock stands -- an empty request, for the threshold
+/// and the opening estimate. Failure is log-only: the card reads "unconfirmed",
+/// and a banner for a label's wording would be noise.
+fn ask_standing(host: &str, port: u16, standing: Standing, recompute: Rc<dyn Fn()>) {
+    let client = gio::SocketClient::new();
+    client.connect_to_host_async(host, port, gio::Cancellable::NONE, move |res| {
+        let conn = match res {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("set-time: no clock verdict from the host: {e}");
+                return;
+            }
+        };
+        conn.output_stream().write_all_async(
+            b"\n".to_vec(),
+            glib::Priority::DEFAULT,
+            gio::Cancellable::NONE,
+            move |res| {
+                if let Err((_, e)) = res {
+                    log::warn!("set-time: could not ask for the clock verdict: {e}");
+                    return;
+                }
+                let istream = conn.input_stream();
+                istream.read_all_async(
+                    vec![0u8; REPLY_CAP],
+                    glib::Priority::DEFAULT,
+                    gio::Cancellable::NONE,
+                    move |res| {
+                        // Moved in so the connection outlives the read.
+                        let _conn = conn;
+                        let reply = match res {
+                            Ok((buf, n, _)) => String::from_utf8_lossy(&buf[..n]).into_owned(),
+                            Err((_, e)) => {
+                                log::warn!("set-time: no reply to the clock verdict: {e}");
+                                return;
+                            }
+                        };
+                        match parse_standing(&reply) {
+                            Some(v) => {
+                                log::info!(
+                                    "set-time: host clock displacement {}s, threshold {}s",
+                                    v.0,
+                                    v.1
+                                );
+                                standing.set(Some(v));
+                                recompute();
+                            }
+                            None => {
+                                log::warn!("set-time: unparseable clock verdict {:?}", reply.trim())
+                            }
+                        }
+                    },
+                );
+            },
+        );
+    });
 }
 
 /// Send `want` to the clock socket and act on the one-line reply. All async on
@@ -482,4 +751,65 @@ fn send(
             },
         );
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Exactly what `sfo-clock-verdict` writes, both lines.
+    const REPLY: &str = "no-restart\n\
+        displacement_now=1200 step=-2700 displacement_after=-1500 threshold=1800\n";
+
+    #[test]
+    fn parses_the_hosts_own_reply() {
+        assert_eq!(parse_standing(REPLY), Some((1200, 1800)));
+    }
+
+    #[test]
+    fn keeps_the_sign_of_a_backward_displacement() {
+        assert_eq!(
+            parse_standing("restart\ndisplacement_now=-4000 threshold=1800\n"),
+            Some((-4000, 1800))
+        );
+    }
+
+    /// Half an answer must not become a confident verdict: the card words a
+    /// host-confirmed restart differently from a guessed one, so a missing
+    /// field has to fall back rather than default.
+    #[test]
+    fn refuses_a_partial_answer() {
+        assert_eq!(parse_standing("restart\ndisplacement_now=1200\n"), None);
+        assert_eq!(parse_standing("restart\nthreshold=1800\n"), None);
+        assert_eq!(parse_standing("displacement_now=x threshold=1800"), None);
+        assert_eq!(parse_standing(""), None);
+        assert_eq!(parse_standing("error: no boot anchor\n"), None);
+    }
+
+    /// A zero or negative threshold would make `|after| >= threshold` true for
+    /// every correction, so the card would warn of a restart on a one-minute
+    /// nudge. Fall back to the configured value instead.
+    #[test]
+    fn refuses_a_threshold_that_would_warn_about_everything() {
+        assert_eq!(
+            parse_standing("no-restart\ndisplacement_now=0 threshold=0"),
+            None
+        );
+        assert_eq!(
+            parse_standing("no-restart\ndisplacement_now=0 threshold=-1800"),
+            None
+        );
+        assert_eq!(
+            parse_standing("no-restart\ndisplacement_now=0 threshold=1"),
+            Some((0, 1))
+        );
+    }
+
+    /// `displacement_after` also ends in `=<n>`; picking it up instead of
+    /// `displacement_now` would silently double-count the operator's step.
+    #[test]
+    fn does_not_confuse_displacement_after_for_now() {
+        let reply = "restart\ndisplacement_now=100 displacement_after=9999 threshold=1800";
+        assert_eq!(parse_standing(reply), Some((100, 1800)));
+    }
 }

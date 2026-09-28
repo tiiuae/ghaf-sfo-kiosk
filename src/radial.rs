@@ -273,9 +273,18 @@ where
             host,
             port,
             reboot_threshold_sec,
+            verdict_host,
+            verdict_port,
         } = &item.action
         {
-            let card = crate::settime::build(host, *port, *reboot_threshold_sec, shared);
+            let card = crate::settime::build(
+                host,
+                *port,
+                *reboot_threshold_sec,
+                verdict_host,
+                *verdict_port,
+                shared,
+            );
             settimes.push((item.id.clone(), card.clone()));
             let trig = trigger.clone();
             button.connect_clicked(move |_| {

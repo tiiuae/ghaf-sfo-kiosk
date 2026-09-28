@@ -130,10 +130,19 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
             host,
             port,
             reboot_threshold_sec,
+            verdict_host,
+            verdict_port,
         } = &spec.action
         {
             // The kiosk owns this one: the press opens a card, nothing dispatches.
-            let card = crate::settime::build(host, *port, *reboot_threshold_sec, shared);
+            let card = crate::settime::build(
+                host,
+                *port,
+                *reboot_threshold_sec,
+                verdict_host,
+                *verdict_port,
+                shared,
+            );
             pending_settimes.push((spec.id.clone(), card.clone()));
             button.connect_clicked(move |_| card.open());
         } else {
