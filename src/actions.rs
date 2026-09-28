@@ -167,6 +167,12 @@ pub fn dispatch<R: Reporter + Clone>(action: &Action, label: &str, reporter: &R,
             log::warn!("button {label:?} is a menu trigger but was pressed as an ordinary button");
             return;
         }
+        // ui.rs / radial.rs bind a Set Time button to its own card and never
+        // call dispatch for it; reaching here is a wiring bug, not a config one.
+        Action::SetTime { .. } => {
+            log::warn!("button {label:?} is a Set Time button but was dispatched");
+            return;
+        }
         Action::Unsupported { reason } => {
             // Not an error to shout about — it is a configuration problem the
             // operator can do nothing about. Say precisely what is wrong so
