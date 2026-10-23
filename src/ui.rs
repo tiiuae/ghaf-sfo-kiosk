@@ -169,9 +169,12 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
     let fans: Vec<radial::Fan> = kiosk
         .menus
         .iter()
-        .map(|menu| {
+        .enumerate()
+        .map(|(i, menu)| {
             let fan = radial::build(
                 menu,
+                // The first menu sits bottom-left, the second bottom-right.
+                i > 0,
                 monitor,
                 &reporter,
                 &scrim_widget,
