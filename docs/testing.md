@@ -41,7 +41,8 @@ silent rather than loud.
   looks deliberate or crowded, and the reason the radius grows past the output's share when there are
   many members;
 - the shipped SFO arc clears the button grid on the laptop panel, which is the constraint that
-  actually bounds the radius on the smallest output the product ships on.
+  actually bounds the radius on the smallest output the product ships on;
+- a bottom-right fan stays inside its box, opens up and to the left, and no two of its boxes overlap.
 
 ## 2. A real compositor, no device
 

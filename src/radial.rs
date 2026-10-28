@@ -98,6 +98,18 @@ impl Geometry {
             items,
         }
     }
+
+    /// A fan for the bottom-right corner: the trigger hugs the right edge and
+    /// the arc opens up and to the left.
+    pub fn bottom_right(members: usize, monitor: (f64, f64)) -> Self {
+        let mut g = Self::new(members, monitor);
+        let w = g.width;
+        g.trigger.0 = w - g.trigger.0;
+        for item in &mut g.items {
+            item.0 = w - item.0;
+        }
+        g
+    }
 }
 
 /// `n` angles across `[lo, hi]`. A single member takes the middle of the span.
@@ -198,6 +210,8 @@ impl Fan {
 /// Build one menu's corner trigger and its arc.
 pub fn build<R>(
     menu: &Menu,
+    // True for a fan in the bottom-right corner.
+    right: bool,
     monitor: (f64, f64),
     banner: &R,
     scrim: &gtk::Widget,
@@ -210,7 +224,11 @@ pub fn build<R>(
 where
     R: Reporter + Clone,
 {
-    let geom = Geometry::new(menu.items.len(), monitor);
+    let geom = if right {
+        Geometry::bottom_right(menu.items.len(), monitor)
+    } else {
+        Geometry::new(menu.items.len(), monitor)
+    };
     // Radius depends on output size and member count; neither is visible on a
     // device, so log what it resolved to.
     log::info!(
@@ -224,7 +242,11 @@ where
 
     let fixed = gtk::Fixed::new();
     fixed.add_css_class("kiosk-radial");
-    fixed.set_halign(gtk::Align::Start);
+    fixed.set_halign(if right {
+        gtk::Align::End
+    } else {
+        gtk::Align::Start
+    });
     fixed.set_valign(gtk::Align::End);
     fixed.set_size_request(geom.width.ceil() as i32, geom.height.ceil() as i32);
 
@@ -591,6 +613,40 @@ mod tests {
             "fan is {:.0} wide but the leftmost tile starts at {grid_left:.0}",
             g.width
         );
+    }
+
+    #[test]
+    fn a_bottom_right_fan_stays_inside_its_box_and_opens_to_the_left() {
+        for screen in SCREENS {
+            for members in 0..=6 {
+                let g = Geometry::bottom_right(members, screen);
+                for (cx, cy) in g.items.iter().copied() {
+                    let left = cx - ITEM_W / 2.0;
+                    let top = cy - ICON_DIAMETER / 2.0;
+                    assert!(
+                        left >= 0.0
+                            && top >= 0.0
+                            && left + ITEM_W <= g.width
+                            && top + ITEM_H <= g.height,
+                        "{members} members, {screen:?}: box at ({left}, {top}) leaves the {}x{} fan",
+                        g.width,
+                        g.height
+                    );
+                    assert!(
+                        cx <= g.trigger.0 + 1e-9,
+                        "{members} members, {screen:?}: a member sits right of the trigger"
+                    );
+                }
+                for pair in g.items.windows(2) {
+                    let dx = (pair[1].0 - pair[0].0).abs();
+                    let dy = (pair[1].1 - pair[0].1).abs();
+                    assert!(
+                        dx >= ITEM_W - 0.5 || dy >= ITEM_H - 0.5,
+                        "{members} members, {screen:?}: boxes only dx={dx:.0} dy={dy:.0} apart"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

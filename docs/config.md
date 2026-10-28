@@ -157,9 +157,10 @@ A button that lands back in the grid is visible and pressable, which is better e
 misconfiguration than one that is silently absent. A trigger with nothing behind it is the exception:
 a control that does nothing when pressed reads as a broken kiosk, so it is dropped instead.
 
-**One trigger.** Every trigger is anchored to the bottom-left corner, so a second one is drawn on top
-of the first with its arc through the first's. The contract has no way to say "the other corner" yet.
-`ghaf-sfo-laptop` asserts against it at build time; this binary will render both and look broken.
+**Two triggers at most.** The first trigger in the config sits bottom-left and the second
+bottom-right. A third would be drawn on top of the second, with its arc through the second's;
+`ghaf-sfo-laptop` asserts against that at build time, and this binary would render it and look
+broken.
 
 ## Actions
 
