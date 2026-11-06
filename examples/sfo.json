@@ -1,12 +1,19 @@
 {
   "version": 1,
   "title": "SFO",
+  "branding": {
+    "logo": "/etc/common/sfo-branding/logo.png",
+    "max_width": 302,
+    "max_height": 160
+  },
   "status_bar": {
     "clock_format": "%H:%M",
     "show_battery": true,
     "show_network": true
   },
-  "layout": { "columns": 3 },
+  "layout": {
+    "columns": 3
+  },
   "buttons": [
     {
       "id": "plan",
@@ -68,14 +75,19 @@
       "label": "Settings",
       "icon": "emblem-system-symbolic",
       "description": "Network, updates and power",
-      "action": { "kind": "menu" }
+      "action": {
+        "kind": "menu"
+      }
     },
     {
       "id": "network",
       "label": "Network",
       "icon": "network-wireless-symbolic",
       "menu": "settings",
-      "action": { "kind": "exec", "argv": ["cosmic-settings", "network"] }
+      "action": {
+        "kind": "exec",
+        "argv": ["cosmic-settings", "network"]
+      }
     },
     {
       "id": "update",
@@ -101,7 +113,10 @@
       "icon": "system-shutdown-symbolic",
       "description": "Lock, log out, restart or shut down",
       "menu": "settings",
-      "action": { "kind": "exec", "argv": ["cosmic-applet-power"] }
+      "action": {
+        "kind": "exec",
+        "argv": ["cosmic-applet-power"]
+      }
     }
   ]
 }

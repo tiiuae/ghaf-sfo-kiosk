@@ -13,13 +13,15 @@ what the kiosk is actually running.
 
 ## Top level
 
-| Key          | Type   | Default | Meaning                                  |
-| ------------ | ------ | ------- | ---------------------------------------- |
-| `version`    | int    | —       | Schema version. **Required.** See below. |
-| `title`      | string | `"SFO"` | Shown at the left of the status bar.     |
-| `buttons`    | array  | —       | **Required, non-empty.**                 |
-| `status_bar` | object | —       | Clock, battery, network.                 |
-| `layout`     | object | —       | `columns` (int, default 3).              |
+| Key          | Type   | Default | Meaning                                                            |
+| ------------ | ------ | ------- | ------------------------------------------------------------------ |
+| `version`    | int    | —       | Schema version. **Required.** See below.                           |
+| `title`      | string | `"SFO"` | Shown at the left of the status bar.                               |
+| `logo`       | string | absent  | Replaces `title` in the status bar. Path or icon name, 24 px tall. |
+| `branding`   | object | absent  | The customer's logo, whole, below the grid. See below.             |
+| `buttons`    | array  | —       | **Required, non-empty.**                                           |
+| `status_bar` | object | —       | Clock, battery, network.                                           |
+| `layout`     | object | —       | `columns` (int, default 3).                                        |
 
 ### `version` is not ceremony
 
@@ -44,6 +46,56 @@ Both directions land on a working kiosk rather than a dead one, which is the who
 
 The same reasoning covered menus arriving earlier: `menu` and `kind: "menu"` are unknown to an old
 binary, so every real button simply stays in the grid.
+
+## Branding — the customer's logo
+
+```jsonc
+"branding": {
+  "logo": "/etc/common/sfo-branding/logo.png",  // absolute path, or an icon name
+  "max_width": 302,                             // logical px, default 302
+  "max_height": 160                             // logical px, default 160
+}
+```
+
+One image in the band below the grid: centred on the screen's centre line, and centred again
+between the bottom of the tiles and the bottom of the surface. That placement is the whole
+specification — there is no side, no corner and no option for one. Absent — and `null`, which is
+what the nix module writes when no brand is configured — draws nothing there.
+
+**A box, not a size.** The logo is fitted inside `max_width` x `max_height` with its aspect ratio
+kept, so whichever edge bites first decides: a wide wordmark stops on the width, a tall or stacked
+mark on the height. The defaults come from the C-specs mock, where the wordmark lockup measures
+302x88 — that artwork's 3.43:1 at 88 tall — so a 302 width reproduces the mock exactly, while 160 of
+height is what a stacked lockup needs before its wordmark becomes readable. One fixed height cannot
+serve both: at the 88 that suits a wordmark, a lockup with two lines of type under an emblem draws
+them 8 px tall. GTK's `pixel_size` is square and cannot express a rectangle, so the kiosk reads the file's own
+ratio to compute it; an icon-theme name, having no file, is treated as square.
+
+**This is not `logo`, and the difference is the point.** `logo` replaces the title text inside the
+status bar, where it is drawn in a 24 px box: a portrait emblem survives that, a wordmark becomes a
+smudge. Setting both is normal — the platform mark in the bar, the customer's below the grid.
+
+Two behaviours worth knowing before you debug one:
+
+- **A missing file draws nothing at all**, and logs which file. In an SFO image the file is staged
+  into a shared directory by the _host_ at boot, so "not there yet" is a real state; GTK would
+  otherwise draw a broken-image icon at full size, which is alarming on a customer's kiosk and says
+  nothing about the cause. A clean screen with a warning in the journal is evidence about the host,
+  not about the kiosk.
+- **`max_height` is capped at a sixth of the output.** It is configured in pixels and the screen is
+  not known until the surface is built, so a value that is generous on the laptop panel would eat
+  the grid's room on a shorter external screen. The cap is logged when it bites.
+
+Both bounds fall back with a warning rather than refusing the file: a non-positive value uses the
+default. Only a `logo` with nothing in it drops the block, because a reserved band with no image in
+it is worse than drawing nothing.
+
+A config written for the older layout, with `edge` and `width`, still loads: both are unknown fields
+now and unknown fields are ignored, so the logo simply moves below the grid inside the default box.
+That is why this did not move `version`.
+
+In an SFO image none of this is edited here — the brand is chosen during installation and the host
+stages the file. See `docs/branding.md` in `ghaf-sfo-laptop`.
 
 ## Buttons
 

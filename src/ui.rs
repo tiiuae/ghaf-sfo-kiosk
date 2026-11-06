@@ -42,6 +42,117 @@ pub struct PendingCards {
     pub settimes: Vec<(String, crate::settime::SetTime)>,
 }
 
+/// The most of an output's height the customer's logo may take.
+///
+/// It is configured in pixels and the screen it lands on is not known until
+/// here, so a height that is merely generous on the laptop can leave the grid
+/// no room on a shorter output. A sixth is far above the 88 px the design asks
+/// for and still bounds a typo.
+const BRANDING_MAX_FRACTION: f64 = 1.0 / 6.0;
+
+/// Breathing room above and below the logo.
+///
+/// In code rather than in CSS because the band is sized from the logo and CSS
+/// padding is not visible from here.
+const BRANDING_MARGIN_Y: i32 = 24;
+
+/// The square `pixel_size` box that fits `logo` inside `max_width` x
+/// `max_height`.
+///
+/// `pixel_size` is a BOX, not a size: GTK fits the image into that many logical
+/// pixels square with its aspect ratio kept, so a portrait emblem comes out
+/// `box` tall while a 3.4:1 wordmark comes out less than a third of that. A
+/// square box cannot express a rectangular one, so the artwork's own ratio has
+/// to be read -- and the file is the only place it exists.
+///
+/// An icon-theme name has no file to measure and is square by convention, so
+/// there the box is the height. Same for a file GDK cannot decode: it will not
+/// draw either, and `branding_band` has already warned about a missing one.
+fn logo_box(logo: &str, max_width: i32, max_height: i32) -> i32 {
+    if !logo.starts_with('/') {
+        return max_height;
+    }
+    match gtk::gdk::Texture::from_filename(logo) {
+        Ok(texture) if texture.height() > 0 => {
+            box_for(max_width, max_height, texture.width(), texture.height())
+        }
+        _ => max_height,
+    }
+}
+
+/// The arithmetic of [`logo_box`], apart from it so it can be tested without a
+/// display or a file.
+///
+/// The drawn height is whichever bound bites first -- `max_height`, or the
+/// height at which the artwork is already `max_width` wide -- and the square
+/// box that produces it is that height times the ratio, or the height itself
+/// for anything at least as tall as it is wide.
+fn box_for(max_width: i32, max_height: i32, width: i32, natural: i32) -> i32 {
+    let ratio = f64::from(width) / f64::from(natural);
+    let drawn = f64::from(max_height).min(f64::from(max_width) / ratio);
+    (drawn * ratio.max(1.0)).round() as i32
+}
+
+/// The customer's logo, centred in the band below the grid.
+///
+/// Same widget as every other icon, at a size two orders of magnitude bigger --
+/// and `pixel_size` is doing more work here than it looks, which is why the box
+/// it wants is computed by [`logo_box`] rather than being the height itself.
+///
+/// **That bound is the point.** The first version of this used `gtk::Picture`,
+/// which fills what it is given -- and a vexpanding `Picture` measures its
+/// natural WIDTH from the height it is offered, so a 260 px panel asked for
+/// 1160 px and took nearly half the screen from the grid. `set_size_request`
+/// does not help: it is a minimum, not a maximum. Measured in a nested
+/// cosmic-comp, not reasoned about.
+///
+/// `None` when the logo names a path with nothing at it: nothing is drawn, and
+/// a line in the journal says which file.
+///
+/// A real state, not a theoretical one. In an SFO image the file is staged at
+/// boot by the HOST, outside this VM, so the kiosk can be asked for a brand the
+/// host has not written yet or failed to write. Left to GTK that draws a
+/// broken-image icon at full size -- alarming on a customer's kiosk, and, being
+/// a picture, silent about what actually went wrong. A clean screen and a
+/// warning puts the evidence where it can be read.
+fn branding_band(branding: &crate::config::Branding, monitor: (f64, f64)) -> Option<gtk::Widget> {
+    if branding.logo.starts_with('/') && !std::path::Path::new(&branding.logo).exists() {
+        log::warn!(
+            "branding: {} does not exist, drawing no logo",
+            branding.logo
+        );
+        return None;
+    }
+
+    let cap = (monitor.1 * BRANDING_MAX_FRACTION) as i32;
+    let max_height = if cap > 0 && branding.max_height > cap {
+        log::warn!(
+            "branding: max_height {} is more than a sixth of a {}px output, using {cap}",
+            branding.max_height,
+            monitor.1 as i32,
+        );
+        cap
+    } else {
+        branding.max_height
+    };
+
+    // Same path-or-icon-name rule as a button's icon, so a brand may be either.
+    let image = icon_image(&branding.logo);
+    image.set_pixel_size(logo_box(&branding.logo, branding.max_width, max_height).max(1));
+    image.set_margin_top(BRANDING_MARGIN_Y);
+    image.set_margin_bottom(BRANDING_MARGIN_Y);
+    // On the screen's centre line, not the grid's: the grid is centred too, but
+    // a FlowBox of two tiles is narrower than one of three and the logo must
+    // not move with it.
+    image.set_halign(gtk::Align::Center);
+
+    let band = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    band.add_css_class("kiosk-branding");
+    band.append(&image);
+
+    Some(band.upcast())
+}
+
 /// Build the whole kiosk surface content for one output.
 ///
 /// `monitor` is the output size in logical pixels; it sets the corner menus'
@@ -177,11 +288,44 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
     }
 
     // ── assembly ────────────────────────────────────────────────────────────
+    //
+    // The logo goes BELOW the grid: centred on the screen, and centred again in
+    // what the grid leaves under it. The status bar spans the width above both,
+    // because the platform mark and the clock belong to the screen rather than
+    // to the customer.
+    let body: gtk::Widget = match kiosk
+        .branding
+        .as_ref()
+        .and_then(|b| branding_band(b, monitor))
+    {
+        None => {
+            grid.set_vexpand(true);
+            grid.clone().upcast()
+        }
+        Some(band) => {
+            // A spacer above the grid and the band below it, both expanding and
+            // neither holding anything that measures: GTK hands them the slack
+            // in equal shares, which leaves the grid centred in the body and
+            // the logo centred in the gap under it. The grid must NOT expand
+            // here -- if it does it takes the slack and the band collapses onto
+            // the bottom edge.
+            let stack = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            spacer.set_vexpand(true);
+            band.set_vexpand(true);
+            band.set_valign(gtk::Align::Center);
+
+            stack.append(&spacer);
+            stack.append(&grid);
+            stack.append(&band);
+            stack.upcast()
+        }
+    };
+
     let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
     column.append(&bar);
     column.append(&banner.revealer);
-    grid.set_vexpand(true);
-    column.append(&grid);
+    column.append(&body);
 
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&column));
@@ -300,4 +444,55 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
     // it -- exactly when a technician wants out. docs/layer-shell-notes.md.
 
     overlay.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::box_for;
+
+    /// What the box does to the three brands an SFO image actually carries.
+    ///
+    /// Brand `a` is a bare wordmark, bounded by the WIDTH, and comes out 302x88
+    /// -- the C-specs mock's own measurement, reproduced exactly. The stacked
+    /// lockups are bounded by the HEIGHT instead, which is the whole point:
+    /// each stacks two lines of wordmark under an emblem, and at `a`'s 88 those
+    /// lines are 8 px tall.
+    #[test]
+    fn each_mark_is_bounded_by_whichever_edge_bites_first() {
+        // As packages/by-name/sfo-branding renders them, measured not assumed:
+        // its renderHeight is 320 and the widths follow each source's ratio.
+        let brand_a = (1097, 320);
+        let brand_i = (388, 320);
+        let brand_d = (372, 320);
+
+        let drawn = |(w, h): (i32, i32)| {
+            let b = f64::from(box_for(302, 160, w, h));
+            let scale = b / f64::from(w.max(h));
+            (
+                (f64::from(w) * scale).round() as i32,
+                (f64::from(h) * scale).round() as i32,
+            )
+        };
+
+        assert_eq!(drawn(brand_a), (302, 88), "the mock's own measurement");
+        assert_eq!(drawn(brand_i), (194, 160));
+        assert_eq!(drawn(brand_d), (186, 160));
+
+        // Nothing may exceed the box on either edge.
+        for art in [brand_a, brand_i, brand_d] {
+            let (w, h) = drawn(art);
+            assert!(
+                w <= 302 && h <= 160,
+                "{art:?} drawn {w}x{h}, outside the box"
+            );
+        }
+    }
+
+    /// A square mark takes the height, and a 1x1 ratio must not be special
+    /// cased to get there.
+    #[test]
+    fn a_square_mark_is_drawn_at_the_height_of_the_box() {
+        assert_eq!(box_for(302, 160, 512, 512), 160);
+        assert_eq!(box_for(302, 120, 64, 64), 120);
+    }
 }

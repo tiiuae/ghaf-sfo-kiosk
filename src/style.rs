@@ -26,6 +26,21 @@ window.kiosk-root {
 .kiosk-clock { font-size: 17px; font-weight: bold; }
 
 /*
+ * The customer's logo, centred in the band below the grid.
+ *
+ * No border and no background: the logo is the only thing down there that
+ * should carry weight, and a hairline or a second background colour would read
+ * as a second surface. The class is kept because it is the node a customer
+ * stylesheet would target, and because an empty rule here is cheaper than
+ * discovering there is no node at all.
+ *
+ * NO PADDING HERE, deliberately. The logo's size is computed in ui.rs and CSS
+ * padding is not visible from there -- so the breathing room is a margin on the
+ * image, in the same place as the arithmetic that depends on it.
+ */
+.kiosk-branding { background: none; border: none; }
+
+/*
  * EVERY rule below that colours a `button` node must also clear
  * `background-image` and `box-shadow`.
  *
