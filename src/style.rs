@@ -344,6 +344,29 @@ window.kiosk-root {
 .kiosk-restarting-body { font-size: 18px; color: #c2ccd8; }
 ";
 
+/// Grid tiles painted from an image, as a stylesheet; empty when there are none.
+///
+/// The URI is percent-encoded by GIO, so a path cannot break out of the string.
+pub fn tile_image_css(kiosk: &crate::config::Kiosk) -> String {
+    use gtk::gio::prelude::FileExt;
+
+    let mut out = String::new();
+    for b in &kiosk.buttons {
+        let Some(path) = &b.tile_image else { continue };
+        let uri = gtk::gio::File::for_path(path).uri();
+        let tile = format!(".kiosk-button.kiosk-button-{}", b.id);
+        // Every state: :hover and :active reset background-image above. No
+        // padding, at the padded tile's size (280+2*24 x 220+2*24), so it covers.
+        out.push_str(&format!(
+            "{tile}, {tile}:hover, {tile}:active {{ background-image: url(\"{uri}\"); \
+             background-size: cover; background-position: center; }}\n\
+             {tile} {{ padding: 0; min-width: 328px; min-height: 268px; }}\n\
+             {tile}:active {{ box-shadow: inset 0 0 0 4px #6ea8ff; }}\n"
+        ));
+    }
+    out
+}
+
 /// Per-button icon colours, rendered as a stylesheet.
 ///
 /// GTK4 CSS cannot read values from the program, so a colour that arrives in

@@ -164,11 +164,11 @@ fn main() -> std::process::ExitCode {
             );
             // Added second and at the same priority, so it overrides the
             // defaults above by order rather than by specificity. Empty when no
-            // button asks for a colour, which costs nothing.
-            let per_button = style::per_button_css(&kiosk);
-            if !per_button.is_empty() {
+            // button asks for a colour or a tile image, which costs nothing.
+            let from_config = style::per_button_css(&kiosk) + &style::tile_image_css(&kiosk);
+            if !from_config.is_empty() {
                 let overrides = gtk::CssProvider::new();
-                overrides.load_from_string(&per_button);
+                overrides.load_from_string(&from_config);
                 gtk::style_context_add_provider_for_display(
                     &display,
                     &overrides,

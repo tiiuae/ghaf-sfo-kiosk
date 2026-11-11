@@ -134,6 +134,10 @@ pub struct Button {
     /// style.rs -- which also means changing it needs no rebuild of this binary.
     #[serde(default)]
     pub icon_color: Option<String>,
+    /// Absolute path of a picture that fills a grid tile in place of the icon
+    /// and label, so it carries the name. Scaled to cover. See docs/config.md.
+    #[serde(default)]
+    pub tile_image: Option<String>,
     /// Render this button in the named menu rather than the grid. The value is
     /// another button's `id`, whose action kind must be `menu`.
     ///
@@ -525,6 +529,8 @@ pub struct ResolvedButton {
     /// Validated `#rrggbb`, or None. Anything malformed was dropped at load with
     /// a warning, so this is safe to paste into a stylesheet.
     pub icon_color: Option<String>,
+    /// An absolute path to a file that existed at load, or None.
+    pub tile_image: Option<String>,
     /// None means act on the press. Dropped at load for an action that runs
     /// nothing, so a Some here always has something to confirm.
     pub confirm: Option<Confirm>,
@@ -604,6 +610,7 @@ pub fn load(path: &Path) -> Result<Kiosk> {
                     None
                 }
             });
+            let tile_image = usable_tile_image(b, &action);
             // A trigger opens a fan and an unconfigured button only reports a
             // problem; neither acts, so there is nothing to confirm. Dropping it
             // here keeps every later stage able to trust that a confirm has an
@@ -638,6 +645,7 @@ pub fn load(path: &Path) -> Result<Kiosk> {
                     description: b.description.clone(),
                     icon: b.icon.clone(),
                     icon_color,
+                    tile_image,
                     confirm,
                     action,
                 },
@@ -665,6 +673,28 @@ pub fn load(path: &Path) -> Result<Kiosk> {
         buttons,
         menus,
     })
+}
+
+/// `b.tile_image` if it can be painted, else None with a warning. Dropped like a
+/// bad colour, and checked here so the grid and the stylesheet can trust it: a
+/// tile painted from a missing file is blank but still acts.
+fn usable_tile_image(b: &Button, action: &Action) -> Option<String> {
+    let path = b.tile_image.as_ref()?;
+    if b.menu.is_some() || matches!(action, Action::Menu) {
+        log::warn!(
+            "button {:?}: ignoring tile_image, a menu trigger or member has no tile",
+            b.id
+        );
+        return None;
+    }
+    if !(Path::new(path).is_absolute() && Path::new(path).is_file()) {
+        log::warn!(
+            "button {:?}: ignoring tile_image {path:?}, not an absolute path to a file",
+            b.id
+        );
+        return None;
+    }
+    Some(path.clone())
 }
 
 /// Split the resolved buttons into the grid and the menus.
@@ -1007,6 +1037,84 @@ mod tests {
             assert!(
                 k.buttons[0].icon_color.is_none(),
                 "expected {bad:?} to be rejected"
+            );
+            assert!(matches!(k.buttons[0].action, Action::Exec { .. }));
+        }
+    }
+
+    /// An empty file named `name` in a directory of its own; delete the parent.
+    fn temp_file(name: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "kiosk-tile-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(name);
+        std::fs::write(&file, b"").unwrap();
+        file
+    }
+
+    /// A grid button, a menu trigger and a menu member, all asking for `tile`.
+    fn with_tile_image(tile: &str) -> Kiosk {
+        let tile = serde_json::to_string(tile).unwrap();
+        parse(&format!(
+            r#"{{"version":1,"buttons":[
+                 {{"id":"plan","label":"Plan","tile_image":{tile},
+                   "action":{{"kind":"exec","argv":["true"]}}}},
+                 {{"id":"gear","label":"Settings","tile_image":{tile},"action":{{"kind":"menu"}}}},
+                 {{"id":"lock","label":"Lock","menu":"gear","tile_image":{tile},
+                   "action":{{"kind":"exec","argv":["true"]}}}}]}}"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_tile_image_survives_on_a_grid_button_only() {
+        let file = temp_file("plan.png");
+        let k = with_tile_image(file.to_str().unwrap());
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+        assert_eq!(k.buttons[0].tile_image.as_deref(), file.to_str());
+        assert!(
+            k.menus[0].items[0].tile_image.is_none(),
+            "a fan item has no tile to paint"
+        );
+        assert!(
+            k.menus[0].trigger.tile_image.is_none(),
+            "nor has a corner trigger"
+        );
+    }
+
+    /// :hover and :active must carry the image too: the base sheet sets
+    /// `background-image: none` on both, which would blank the tile on a touch.
+    #[test]
+    fn a_tile_image_is_painted_in_every_state() {
+        // A space and a quote: neither may escape the url("...") string.
+        let file = temp_file("a b\".png");
+        let css = crate::style::tile_image_css(&with_tile_image(file.to_str().unwrap()));
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+        let tile = ".kiosk-button.kiosk-button-plan";
+        assert!(css.contains(&format!(
+            "{tile}, {tile}:hover, {tile}:active {{ background-image: url(\"file://"
+        )));
+        assert!(css.contains("a%20b%22.png\")"), "{css}");
+        assert!(
+            !css.contains("kiosk-button-lock"),
+            "a menu member gets no tile rule"
+        );
+    }
+
+    /// A tile painted from a missing file is blank but still acts, so the button
+    /// keeps its icon and label instead.
+    #[test]
+    fn a_tile_image_that_is_not_a_file_is_dropped() {
+        for bad in ["/nonexistent/plan.png", "plan.png", "/", ""] {
+            let k = with_tile_image(bad);
+            assert!(
+                k.buttons[0].tile_image.is_none(),
+                "expected {bad:?} to be dropped"
             );
             assert!(matches!(k.buttons[0].action, Action::Exec { .. }));
         }

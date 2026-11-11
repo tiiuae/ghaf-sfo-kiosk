@@ -105,19 +105,24 @@ pub fn build(kiosk: &Kiosk, monitor: (f64, f64), shared: &crate::shared::Shared)
     for spec in &kiosk.buttons {
         let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
         content.set_valign(gtk::Align::Center);
-        if let Some(icon) = &spec.icon {
-            let image = icon_image(icon);
-            image.set_pixel_size(88);
-            // Named so style.rs can colour it and so a per-button icon_color has
-            // a node to target. Mirrors kiosk-radial-item-icon.
-            image.add_css_class("kiosk-button-icon");
-            content.append(&image);
-        }
-        let label = gtk::Label::new(Some(&spec.label));
-        label.add_css_class("kiosk-button-label");
-        content.append(&label);
-
         let button = gtk::Button::new();
+        if spec.tile_image.is_some() {
+            // style.rs paints the picture, which carries the name; the label
+            // still names the button for a screen reader.
+            button.update_property(&[gtk::accessible::Property::Label(&spec.label)]);
+        } else {
+            if let Some(icon) = &spec.icon {
+                let image = icon_image(icon);
+                image.set_pixel_size(88);
+                // Named so style.rs can colour it and so a per-button icon_color has
+                // a node to target. Mirrors kiosk-radial-item-icon.
+                image.add_css_class("kiosk-button-icon");
+                content.append(&image);
+            }
+            let label = gtk::Label::new(Some(&spec.label));
+            label.add_css_class("kiosk-button-label");
+            content.append(&label);
+        }
         button.set_child(Some(&content));
         button.add_css_class("kiosk-button");
         button.add_css_class(&format!("kiosk-button-{}", spec.id));
