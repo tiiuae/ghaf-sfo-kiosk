@@ -53,6 +53,7 @@ binary, so every real button simply stays in the grid.
   "label": "Plan",                    // what the operator reads
   "description": "Mission planning",  // tooltip, optional
   "icon": "map-symbolic",             // theme name, or an absolute path
+  "tile_image": "/nix/store/…/plan.png", // optional; see `tile_image` below
   "menu": "settings",                 // optional; see "Menus" below
   "confirm": { ... },                 // optional; see "Asking first" below
   "action": { ... }
@@ -61,6 +62,18 @@ binary, so every real button simply stays in the grid.
 
 Order comes from the nix module, which sorts before writing; the array order here is the display
 order.
+
+### `tile_image` — a picture instead of icon and label
+
+An absolute path to an image that fills the whole grid tile. It replaces the icon and the label, so
+the picture has to carry the name itself; the label is still the button's accessible name. The image
+is scaled to cover the tile, so draw it at 390×319 (the tile's shape on a 1920×1080 panel) or it
+is cropped.
+
+Grid buttons only: a menu trigger or member has no tile, and the field is ignored there with a
+warning. A path
+that is relative or does not exist when the kiosk starts is dropped with a warning, and the button
+falls back to its icon and label. An older binary ignores the field the same way.
 
 ### `confirm` — asking first
 
