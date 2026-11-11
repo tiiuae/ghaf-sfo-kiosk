@@ -25,6 +25,12 @@ pub struct Config {
     /// icon name, same rule as a button's `icon`.
     #[serde(default)]
     pub logo: Option<String>,
+    /// The customer's logo, drawn whole in the band below the grid.
+    ///
+    /// Absent -- and `null`, which is what the nix module writes when no brand
+    /// is configured -- draws nothing there.
+    #[serde(default)]
+    pub branding: Option<RawBranding>,
     #[serde(default)]
     pub status_bar: StatusBar,
     #[serde(default)]
@@ -35,6 +41,49 @@ pub struct Config {
 fn default_title() -> String {
     "SFO".to_owned()
 }
+
+/// The branding block as written, before its one tolerated mistake is taken out
+/// of it.
+///
+/// `height` is an `Option` here and a number in [`Branding`] for the same
+/// reason every other fallback in this file exists: an unusable value must not
+/// be a *parse* error, because a parse error is fatal to the whole file. A
+/// kiosk that will not start because somebody typed `-40` is worse than one
+/// that draws the logo at its default size and says so.
+#[derive(Debug, Deserialize)]
+pub struct RawBranding {
+    pub logo: String,
+    #[serde(default)]
+    pub max_width: Option<i32>,
+    #[serde(default)]
+    pub max_height: Option<i32>,
+}
+
+/// The customer's logo, resolved.
+#[derive(Debug, Clone)]
+pub struct Branding {
+    /// Absolute path, or an icon-theme name -- the same rule as a button's
+    /// `icon`. In practice always a path: the file is staged outside the store
+    /// by the host, because the brand is chosen during installation.
+    pub logo: String,
+    /// Logical pixels. A BOX, not a size: the logo is fitted inside it with its
+    /// aspect ratio kept, so a wide wordmark stops on the width and a stacked
+    /// mark on the height. One fixed height cannot serve both -- at the 88 px
+    /// that suits a 3.4:1 wordmark, a lockup with two lines of type under its
+    /// emblem draws those lines 8 px tall.
+    pub max_width: i32,
+    pub max_height: i32,
+}
+
+/// The C-specs mock's own measurement: the wordmark lockup is 302x88 there,
+/// which is that artwork's 3.43:1 at 88 tall. A wordmark is bounded by the
+/// width, so the mock's drawing comes out exactly rather than approximately.
+const DEFAULT_BRANDING_WIDTH: i32 = 302;
+
+/// What a stacked lockup gets instead, its wordmarks readable at 15 px. Both
+/// mirror the defaults in ghaf-sfo-laptop's nix module; these are what a
+/// hand-written config gets.
+const DEFAULT_BRANDING_HEIGHT: i32 = 160;
 
 #[derive(Debug, Deserialize)]
 pub struct StatusBar {
@@ -546,6 +595,45 @@ fn valid_hex_colour(s: &str) -> bool {
     s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Take the branding block apart, warning about anything unusable rather than
+/// refusing to start.
+///
+/// Same call as a bad `icon_color`: the logo is decoration, and a kiosk that
+/// will not come up over a mistyped height is a kiosk the operator cannot use
+/// at all. The one thing that does drop it is having no logo to draw.
+fn resolve_branding(raw: Option<RawBranding>) -> Option<Branding> {
+    let raw = raw?;
+
+    if raw.logo.trim().is_empty() {
+        log::warn!("branding: no logo, so nothing is drawn below the grid");
+        return None;
+    }
+
+    let max_width = match raw.max_width {
+        None => DEFAULT_BRANDING_WIDTH,
+        Some(w) if w > 0 => w,
+        Some(w) => {
+            log::warn!("branding: max_width {w} is not positive, using {DEFAULT_BRANDING_WIDTH}");
+            DEFAULT_BRANDING_WIDTH
+        }
+    };
+
+    let max_height = match raw.max_height {
+        None => DEFAULT_BRANDING_HEIGHT,
+        Some(h) if h > 0 => h,
+        Some(h) => {
+            log::warn!("branding: max_height {h} is not positive, using {DEFAULT_BRANDING_HEIGHT}");
+            DEFAULT_BRANDING_HEIGHT
+        }
+    };
+
+    Some(Branding {
+        logo: raw.logo,
+        max_width,
+        max_height,
+    })
+}
+
 /// A trigger and its buttons, in config order -- also their order on the arc,
 /// nearest the corner first.
 pub struct Menu {
@@ -556,6 +644,7 @@ pub struct Menu {
 pub struct Kiosk {
     pub title: String,
     pub logo: Option<String>,
+    pub branding: Option<Branding>,
     pub status_bar: StatusBar,
     pub layout: Layout,
     /// Grid buttons: everything that is not a trigger and not in a menu.
@@ -668,6 +757,7 @@ pub fn load(path: &Path) -> Result<Kiosk> {
     Ok(Kiosk {
         title: cfg.title,
         logo: cfg.logo,
+        branding: resolve_branding(cfg.branding),
         status_bar: cfg.status_bar,
         layout: cfg.layout,
         buttons,
@@ -832,6 +922,17 @@ mod tests {
             .map(|b| b.id.as_str())
             .collect();
         assert_eq!(asks, ["clear"], "only Clear asks before it acts");
+
+        // The example is also what a reader copies from, so it carries the
+        // customer's logo pointed at the path an SFO image really stages to --
+        // outside the store, because the brand is chosen during installation.
+        let branding = k.branding.expect("the example shows the customer's logo");
+        assert_eq!(branding.max_width, DEFAULT_BRANDING_WIDTH);
+        assert_eq!(branding.max_height, DEFAULT_BRANDING_HEIGHT);
+        assert!(
+            !branding.logo.starts_with("/nix/store"),
+            "a store path would bake one customer's logo into the image"
+        );
     }
 
     /// A trigger runs nothing; it is a place to put buttons.
@@ -937,6 +1038,89 @@ mod tests {
         )
         .unwrap();
         assert_eq!(without.logo, None);
+    }
+
+    /// The customer's logo is optional, and its absence is spelled two ways: the
+    /// field missing, and the field `null` -- which is what the nix module
+    /// writes for an image with no brand configured. Both must mean "draw
+    /// nothing" rather than one of them meaning "parse error".
+    #[test]
+    fn a_branding_block_is_optional_and_survives_to_the_kiosk() {
+        let with = parse(
+            r#"{"version":1,
+                "branding":{"logo":"/etc/common/sfo-branding/logo.png","max_width":400,"max_height":120},
+                "buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}]}"#,
+        )
+        .unwrap();
+        let b = with.branding.expect("branding survives to the kiosk");
+        assert_eq!(b.logo, "/etc/common/sfo-branding/logo.png");
+        assert_eq!(b.max_width, 400);
+        assert_eq!(b.max_height, 120);
+
+        // An older config, written when the logo sat in a column beside the
+        // grid. Both keys are gone and unknown fields are ignored, so it still
+        // parses and the logo simply moves -- version 1 throughout.
+        let moved = parse(
+            r#"{"version":1,
+                "branding":{"logo":"/l.png","edge":"right","width":300},
+                "buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}]}"#,
+        )
+        .unwrap()
+        .branding
+        .expect("a config written for the old panel still draws a logo");
+        assert_eq!(moved.max_height, DEFAULT_BRANDING_HEIGHT);
+
+        for json in [
+            r#"{"version":1,
+                "buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}]}"#,
+            r#"{"version":1,"branding":null,
+                "buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}]}"#,
+        ] {
+            assert!(
+                parse(json).unwrap().branding.is_none(),
+                "absent and null must both mean no logo: {json}"
+            );
+        }
+    }
+
+    /// Everything about the logo except the file itself has a fallback, and
+    /// none of them is fatal.
+    ///
+    /// The box is what would be, if it were deserialised straight into the
+    /// resolved struct: a negative number is as parseable as a good one and
+    /// would reach the widget. A kiosk that refuses to start, or draws an
+    /// invisible logo, because somebody typed `-40` is worse than one that uses
+    /// the default and says so.
+    #[test]
+    fn a_malformed_branding_block_falls_back_rather_than_killing_the_kiosk() {
+        let buttons =
+            r#""buttons":[{"id":"a","label":"A","action":{"kind":"exec","argv":["true"]}}]"#;
+
+        for bad in ["0", "-40"] {
+            let b = parse(&format!(
+                r#"{{"version":1,"branding":{{"logo":"/l.png","max_width":{bad},"max_height":{bad}}},{buttons}}}"#
+            ))
+            .unwrap()
+            .branding
+            .expect("a bad box keeps the logo");
+            assert_eq!(
+                b.max_width, DEFAULT_BRANDING_WIDTH,
+                "max_width {bad} falls back"
+            );
+            assert_eq!(
+                b.max_height, DEFAULT_BRANDING_HEIGHT,
+                "max_height {bad} falls back"
+            );
+        }
+
+        // The exception: with nothing to draw, the block is dropped outright.
+        // Keeping it would leave the band reserved and empty, which is not a
+        // fallback but a worse result than drawing nothing.
+        let empty = parse(&format!(
+            r#"{{"version":1,"branding":{{"logo":"   "}},{buttons}}}"#
+        ))
+        .unwrap();
+        assert!(empty.branding.is_none());
     }
 
     /// A stale `exit` object is an unknown field, and unknown fields are
