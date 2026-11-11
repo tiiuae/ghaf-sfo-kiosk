@@ -20,7 +20,7 @@
 //! other reference. One primary button that always shows the size of the change
 //! and, when the machine will restart, says so, takes the destructive styling
 //! and goes dead for a moment so a double tap cannot reach it. On confirm the
-//! kiosk writes `YYYY-MM-DD HH:MM` to net-vm's socket itself; a correction that
+//! kiosk writes to net-vm's socket itself (see `wire_line`); a correction that
 //! restarts goes straight into the restart screen (shutdown.rs).
 //!
 //! **The restart verdict is the host's.** It reboots on the clock's distance
@@ -70,8 +70,9 @@ const REPLY_CAP: usize = 256;
 /// socket acts on; this one it refuses, so a misrouted probe cannot set the clock.
 const PROBE_VERB: &str = "would-set";
 
-/// `None` on any failure: callers fall back rather than report.
-type OnVerdict = Box<dyn FnOnce(Option<(bool, Option<i64>)>)>;
+/// `None` on any failure: callers fall back rather than report. The second is
+/// the host's `epoch=`, never without the first.
+type OnVerdict = Box<dyn FnOnce(Option<(bool, Option<i64>)>, Option<i64>)>;
 
 /// `restart`/`no-restart`, plus `displacement_after=` when present: the first
 /// token alone answers the question; the number only words it.
@@ -86,6 +87,26 @@ fn parse_verdict(reply: &str) -> Option<(bool, Option<i64>)> {
         .find_map(|t| t.strip_prefix("displacement_after="))
         .and_then(|v| v.parse().ok());
     Some((restarts, after))
+}
+
+/// The host's reading of the target (tiiuae/ghaf-sfo-laptop#65). An older
+/// host sends none.
+fn parse_epoch(reply: &str) -> Option<i64> {
+    reply
+        .split_whitespace()
+        .find_map(|t| t.strip_prefix("epoch="))
+        .and_then(|v| v.parse().ok())
+        .filter(|e: &i64| *e > 0)
+}
+
+/// What net-vm is sent: `@<epoch>` only when host and card read the target as
+/// the same instant, so a zone wrong on either side can never do worse than
+/// the string. Otherwise the string, which every net-vm accepts.
+fn wire_line(want: &str, host_epoch: Option<i64>, card_epoch: Option<i64>) -> String {
+    match host_epoch.filter(|e| Some(*e) == card_epoch) {
+        Some(e) => format!("@{e}\n"),
+        None => format!("{want}\n"),
+    }
 }
 
 /// `displacement_now=` and `threshold=` from an untargeted reply. Both or
@@ -269,6 +290,20 @@ fn wire_target(calendar: &gtk::Calendar, hour: i32, minute: i32) -> String {
     )
 }
 
+/// The same target as an instant in this card's zone, to cross-check the host's.
+fn card_epoch(calendar: &gtk::Calendar, hour: i32, minute: i32) -> Option<i64> {
+    glib::DateTime::from_local(
+        calendar.year(),
+        calendar.month() + 1,
+        calendar.day(),
+        hour,
+        minute,
+        0.0,
+    )
+    .ok()
+    .map(|d| d.to_unix())
+}
+
 /// `d h min` from a second count, omitting zero units, always at least minutes.
 fn human(delta: i64) -> String {
     if delta < 60 {
@@ -396,7 +431,7 @@ fn schedule_ask(model: &Rc<Model>, host: &str, port: u16, want: &str) {
                 port,
                 &asked,
                 cancel,
-                Box::new(move |answer| {
+                Box::new(move |answer, _epoch| {
                     // Superseded: a newer request is on its way and will redraw.
                     if !model.current(opening) || model.pending.get() != mine {
                         return;
@@ -807,6 +842,7 @@ pub fn build(
                 return;
             }
             let want = wire_target(&calendar, hour.get(), minute.get());
+            let card_epoch = card_epoch(&calendar, hour.get(), minute.get());
             let shown = btn.has_css_class("kiosk-settime-set-restart");
             let opening = model.opened.get();
             let click = model.clicks.get().wrapping_add(1).max(1);
@@ -822,7 +858,7 @@ pub fn build(
                 verdict_port,
                 &asked,
                 model.cancellable(),
-                Box::new(move |answer| {
+                Box::new(move |answer, epoch| {
                     if model.confirming.get() == click {
                         model.confirming.set(0);
                     }
@@ -841,8 +877,17 @@ pub fn build(
                         return;
                     }
                     model.sending.set(true);
-                    log::info!("set-time: sending {want:?} to {host}:{port} (restarts={restarts})");
-                    send(&host, port, &want, shared, reporter, me, restarts);
+                    let line = wire_line(&want, epoch, card_epoch);
+                    if epoch.is_some() && !line.starts_with('@') {
+                        log::warn!(
+                            "set-time: host read {want:?} as {epoch:?}, this card as {card_epoch:?}; sending the string"
+                        );
+                    }
+                    log::info!(
+                        "set-time: sending {:?} for {want:?} to {host}:{port} (restarts={restarts})",
+                        line.trim_end()
+                    );
+                    send(&host, port, line, shared, reporter, me, restarts);
                 }),
             );
         });
@@ -872,7 +917,7 @@ fn ask_verdict(
             Ok(c) => c,
             Err(e) => {
                 log::warn!("set-time: no clock verdict from the host: {e}");
-                on_reply(None);
+                on_reply(None, None);
                 return;
             }
         };
@@ -884,7 +929,7 @@ fn ask_verdict(
             move |res| {
                 if let Err((_, e)) = res {
                     log::warn!("set-time: could not ask for the clock verdict: {e}");
-                    on_reply(None);
+                    on_reply(None, None);
                     return;
                 }
                 let istream = conn.input_stream();
@@ -899,18 +944,19 @@ fn ask_verdict(
                             Ok((buf, n, _)) => String::from_utf8_lossy(&buf[..n]).into_owned(),
                             Err((_, e)) => {
                                 log::warn!("set-time: no reply to the clock verdict: {e}");
-                                on_reply(None);
+                                on_reply(None, None);
                                 return;
                             }
                         };
                         let answer = parse_verdict(&reply);
+                        let epoch = answer.and_then(|_| parse_epoch(&reply));
                         match answer {
                             Some((restarts, after)) => log::info!(
-                                "set-time: host says {want:?} -> restart={restarts} after={after:?}"
+                                "set-time: host says {want:?} -> restart={restarts} after={after:?} epoch={epoch:?}"
                             ),
                             None => log::warn!("set-time: unusable verdict {:?}", reply.trim()),
                         }
-                        on_reply(answer);
+                        on_reply(answer, epoch);
                     },
                 );
             },
@@ -982,14 +1028,15 @@ fn ask_standing(host: &str, port: u16, model: Rc<Model>, opening: u64) {
     });
 }
 
-/// Send `want` to the clock socket and act on the one-line reply. All async on
-/// the GTK loop; `conn` is carried through every stage so the stream stays open.
-/// Bounded by a timeout but never cancelled: once written, the clock may be set,
-/// and only the reply can say whether to show the restart screen.
+/// Send `line` (see `wire_line`) to the clock socket and act on the one-line
+/// reply. All async on the GTK loop; `conn` is carried through every stage so
+/// the stream stays open. Bounded by a timeout but never cancelled: once
+/// written, the clock may be set, and only the reply can say whether to show
+/// the restart screen.
 fn send(
     host: &str,
     port: u16,
-    want: &str,
+    line: String,
     shared: Shared,
     reporter: Broadcast,
     card: SetTime,
@@ -997,7 +1044,6 @@ fn send(
 ) {
     let client = gio::SocketClient::new();
     client.set_timeout(SEND_TIMEOUT_SECS);
-    let line = format!("{want}\n");
     client.connect_to_host_async(host, port, gio::Cancellable::NONE, move |res| {
         let conn = match res {
             Ok(c) => c,
@@ -1161,6 +1207,59 @@ mod tests {
             Some(("2026-11-02 15:00".to_owned(), true, None))
         );
         assert!(m.unanswered.borrow().is_none());
+    }
+
+    /// A host with the epoch (tiiuae/ghaf-sfo-laptop#65) appends two tokens;
+    /// every reading of the reply that predates them must be unchanged.
+    const REPLY_WITH_EPOCH: &str = "no-restart\n\
+        displacement_now=1200 step=-2700 displacement_after=-1500 threshold=1800 \
+        epoch=1794384000 zone=Asia/Dubai\n";
+
+    #[test]
+    fn the_epoch_tokens_change_nothing_else() {
+        assert_eq!(parse_verdict(REPLY_WITH_EPOCH), parse_verdict(REPLY));
+        assert_eq!(parse_standing(REPLY_WITH_EPOCH), parse_standing(REPLY));
+    }
+
+    #[test]
+    fn sends_the_hosts_epoch_when_it_gave_one() {
+        let epoch = parse_epoch(REPLY_WITH_EPOCH);
+        assert_eq!(epoch, Some(1794384000));
+        assert_eq!(
+            wire_line("2026-11-11 12:00", epoch, Some(1794384000)),
+            "@1794384000\n"
+        );
+    }
+
+    /// Host and card disagree on the instant (a zone wrong on one side): today's string.
+    #[test]
+    fn falls_back_to_the_string_when_host_and_card_disagree() {
+        let want = "2026-11-11 12:00";
+        assert_eq!(
+            wire_line(want, Some(1794384000), Some(1794369600)),
+            "2026-11-11 12:00\n"
+        );
+        assert_eq!(
+            wire_line(want, Some(1794384000), None),
+            "2026-11-11 12:00\n"
+        );
+    }
+
+    /// An older host, or a garbled number: the string, exactly as before.
+    #[test]
+    fn falls_back_to_the_string_without_an_epoch() {
+        for reply in [
+            REPLY,
+            "restart\nepoch=x",
+            "restart\nepoch=-5",
+            "restart\nepoch=0",
+        ] {
+            assert_eq!(parse_epoch(reply), None, "{reply:?}");
+        }
+        assert_eq!(
+            wire_line("2026-11-11 12:00", None, Some(1794384000)),
+            "2026-11-11 12:00\n"
+        );
     }
 
     /// A send cannot be cancelled, so a close and reopen must not free Set.
